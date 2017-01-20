@@ -1,0 +1,1174 @@
+#! /bin/bash 
+# /bin/bash #-x
+#set -e
+
+# 2017-1-19
+# original filename: cchess.term
+## cchess, run in command line only
+
+### HEAD ###
+### define ###
+APPNAME="cchess"
+VERSION="0.1"
+
+
+### user dirs, filenames, and sameples
+#
+## ~/.config/cchess/
+## ~/.config/cchess/cchess.cfg
+## ~/.config/cchess/cchess.log
+#
+## PGN/FEN 文件名命名方案1: 一般由8位字符组成
+## 例: PGN 文件默认保存目录:  ~/.config/cchess/pgn/
+#  方案1(默认方案): .../pgn/17av0001.pgn
+#
+# 前4位为年月日代码; 后４位数字为序号0001-9999, 超过9999后从0001重新计数
+# 第1,2位字符: 17代表2017年
+# 第3位字符:   1-9:代表1-9月; 小写字母abc: 10-12月
+# 第4位字符:   1-9: 1-9日; 小写字母a-v: 10-31日.详细如下面所示:
+#    abcdefg=10-16; hijklmn=17-23; opq rst=24-29; uv=30,31;
+#   (注: 字母w xyz未使用);
+# 第5-8位: 如 0001: ４位数序号．序号自动累计，不受前面4位日期代码的影响
+#
+# 或者:  PGN/FEN 文件名命名方案2:
+# .../pgn/1234567890_17av0001.pgn
+#
+# 或者:  PGN/FEN 文件名命名方案3: (文件名用"年月日,小时,分钟"代替)
+# .../pgn/2017-0120_2059.pgn
+#
+## ~/.config/cchess/fen/ 目录下的 FEN 棋局文件,命名方案同 PGN
+
+USERDIR="$HOME/.config/$APPNAME"
+
+CFG="$USERDIR/$APPNAME.cfg"
+LOG="$USERDIR/$APPNAME.log"
+
+#
+PGN_DIR="$USERDIR/pgn"
+FEN_DIR="$USERDIR/fen"
+
+## pgn.index, fen.index 文件: 用来记录上次的序号已经编到多少数字了
+#  每次运行程序,都会读取这个文件
+PGN_INDEX="$USERDIR/pgn.index"
+FEN_INDEX="$USERDIR/fen.index"
+
+## PGN_TMP_HEAD: 单个对局的 PGN 临时文件头.
+# 主要用于同一个PGN文件中,有多个对局的情况:
+# 把每个对局都写入单独的临时文件,是为了方便修改标签,如胜负结果,
+# FEN棋局修改(如残局图, 或非标准开局, 让子,等), PGN索引序号等,
+# 而不会对同一PGN文件中的其它对局的标签产生误操作或批量修改；
+#     注: 在保存 PGN 时运行即可.
+## PGN_TMP_HEAD=`mktemp` 
+
+## 记录中文走法(如炮二平五,车1进1)到临时文件,
+# 便于实现悔棋后的数据修改操作. 开始新对局后,会重新运行一次,不会干扰上次对局
+# 的数据
+PGN_BODY=`mktemp`
+
+##  init, 用于记录导出的 PGN 对局/棋谱文件，以及 FEN 棋局的序号，
+# 并保存到配置文件 cchess.cfg, pgn.index, fen.index ．
+# 类似于数码相机里照片的文件名序号，
+# 防止保存时文件重名造成的覆盖和数据丢失
+
+declare -i PGN_NUM FEN_NUM
+
+
+
+## PGN_UUID 的构成
+## PGN_UUID = PGN_SN (10位) + (_) + PGN_4DATE (4位) + PGN_NUM (4位)
+
+## PGN_SN (序列号附加码), 即用当前时间的字符串(通常为10位数字),当成 PGN_UUID
+#  的前置字符串, 避免因为 PGN_UUID 序号重号产生的意外覆盖和PGN丢失.
+PGN_SN=`date +%s` 
+
+
+### 读取当前语言环境，是 zh_CN*, zh_TW*, zh_HK*, 还是其它
+## 例：LANG=zh_CN.UTF-8 --> CLANG=zh_CN
+CLANG=`echo ${LANG%%.*}`
+
+
+
+#
+declare -i ID=1   # 红方/黑方任意一方每走一步,计数+1
+declare -i LOOP=1 # 第几回合: 红,黑双方各走完一步后, 计数+1(实际是黑方走后+1)
+declare -i TRUN=1 # 1=轮到红方走; 0=黑方走. 走完后马上把1变0,0变1
+
+
+### 内部参数设置,一般不需要调整
+# 黑方走法数字格式: 0代表中文全角数字(默认方案,排版对齐效果好);
+# 1: 代表英文半角数字；其它数值: 等同于=0
+BLACK_MOVE_FORMAT="0" 
+
+# 是否记录日志
+KEEP_LOG=0
+
+## 调试开关
+DEBUG=0
+
+### 程序相关
+
+_init_cfg () {
+    cat<<EOF
+### $APPNAME configure
+## coding: utf-8
+[$APPNAME $VERSION] 
+CFG_FILE="$USERDIR/$APPNAME.cfg"
+LOG_FILE="$LOG"
+
+### 默认保存/导出的文件序号
+[PGN]
+PGN_NUM="1"
+
+[FEN]
+FEN_NUM="1"
+EOF
+}
+
+
+### PGN 相关
+# PGN 文件结构组成:
+# 1. 文件头(标签组), 先写入临时文件,用于结束对局后修改胜负,
+# 2. 自定义标签组
+# 3. 走棋记录,及胜负结果代码, 以示简单的胜负说明文字.
+#    也先写入临时文件,方便悔棋后,删除原来的部分走法； 
+# 4. 附加的评论(以花括号包起来). 可以在保存/导出 PGN 后,把手动编写的评论,
+#    添加到 PGN 文件后面, 用来制作棋谱.
+
+# [Date "`date +%Y.%m.%d`"]
+# [Date ""]
+_mk_pgn_head () {
+cat <<EOF
+[Game "Chinese Chess"]
+[Event ""]
+[Round ""]
+[Date ""]
+[Site ""]
+[Red ""]
+[RedTeam ""]
+[Black ""]
+[BlackTeam ""]
+[Result "*"]
+[Opening ""]
+[Variation ""]
+[ECCO ""]
+EOF
+}
+
+
+## 自定义的标签
+# Format: 即棋子走法的记录格式,有 Chinese, WXF, ICCS 三种
+#     默认为 Chinese (即炮二平五)的形式.
+# Index: 对局的序列号,方便定位同一PGN文件中的多个对局,或者制作棋谱
+#     数值一般为19位字符, 如: 1234567890_17aa0001
+#     也是默认的 PGN/FEN 文件名.
+# Time: 记录对局的时间, 时分秒
+# TimeControl: 对局限时规则, 如 "局时 10:00 步时 3:00"
+
+
+# [Time "`date +%H:%M:%S`"]
+# [Time ""]
+_mk_pgn_custom () {
+cat <<EOF
+[Generator "cchess"]
+[Format "Chinese"]
+[Index ""]
+[Time ""]
+[TimeControl ""]
+EOF
+}
+
+
+_mk_default_fen () {
+    cat <<EOF
+[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+{
+}
+EOF
+}
+
+_show_default_fen () {
+    cat <<EOF
+[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+EOF
+}
+
+#
+_mksample_pgn_body () {
+    cat <<EOF
+  1. 炮二平五 马８进７
+  2. 马二进三 车９平８
+  3. 车一平二 马２进３
+  4. 马八进九 卒７进１
+  5. 炮八平七 车１平２
+  6. 车九平八 炮２进４
+  7. 车二进四 炮８平９
+  8. 车二平四 车８进１
+  9. 兵九进一 车８平２
+ 10. 车八进一 车２进３
+ 11. 车八平四 车２平４
+ 12. 前车进二 车４进３
+ 13. 炮七进四 士４进５
+ 14. 前车平三 马７退９
+ 15. 车四进三 车４退４
+ 16. 炮五平八 炮２平１
+ 17. 炮八平七 炮９平５
+ 18. 仕四进五 象３进１
+ 19. 车三平一 马９进７
+ 20. 车一平三 马７退９
+ 21. 车四进四 象１进３
+ 22. 车四平一 车４平３
+ 23. 车三进三
+EOF
+}
+
+
+## disabled
+_mk_pgn_end () {
+cat <<EOF
+*
+EOF
+}
+
+
+### WXF代码, 辅助操作代码说明
+
+_sample_wxf_00 () {
+    cat<<EOF
+ ------------------------
+序号 代码   中文输出           说明
+
+ 1* 15+1 帅五进一 (或将5进1)  1-7代表红方: 帅仕相马车炮兵
+ 2* 26+5 仕六进五 (或士6进5)    (或者黑方: 将士象马车炮卒)
+ 3* 37+5 相七进五 (或象7进5)  第3个字符 + 代表进
+ 4* 48-7 马八退七 (或马8退7)  第3个字符 - 代表退
+ 5* 59+1 车九进一 (或车9进1)
+ 6* 62.5 炮二平五 (或炮2平5)  第3个字符 . 代表平
+ 7* 73+1 兵三进一 (或卒3进1)
+
+ 8* 7+.1 前兵平一 (或前卒平1)  第2个字符 + 代表前; -代表中; .代表后
+ 9* 7-.1 中兵平一 (或中卒平1)  
+10* 7..1 后兵平一 (或后卒平1)  
+
+11* 7a.1 一兵平一 (或一卒平1)  兵/卒的特例: 第2个字符用小写字母abcde
+12* 7b.1 二兵平一 (或二卒平1)    分别代表同一条竖线有4个或5个兵/卒(最前面是一);
+13* 7c.1 三兵平一 (或三卒平1)    或者有两条竖线都有2个或3个兵/卒.
+14* 7d.1 四兵平一 (或四卒平1)    详细的一二三四五定义,见 <<中国象棋-着法表示>>
+15* 7e.1 五兵平一 (或五卒平1)    www.xqbase.com/protocol/cchess_move.htm 
+  abcde定义简介:最右前为一,同一竖线为二(或者二,三),完了再左边的竖线,最前到最后;
+  如果五个兵卒是2+2+1分布,单独的兵/卒属于标准走法(如兵几进几,兵几平几);
+ -------------------------
+
+EOF
+}
+
+_sample_wxf_extra () {
+    cat<<EOF
+ -------------------------
+注1: 以下属于自定义的操作代码, 用于手动记录棋谱, 并不是WXF定义的标准代码;
+注2: 大多数代码功能暂未实现,仅定义为可扩展的功能.程序后续版本如果变更,
+     操作代码可能会有变更或者补充.
+操作代码版本: 0.1
+
+序号 代码   中文输出           说明
+
+* "让先(停走)/让子"相关代码
+
+21* .... ...                某方让先(或者停走)
+22* ..51 红让车1 (或:黑让车1)  红方/黑方没有1路车(用于记录让子的棋局).如:红方
+  让1路车和2路马, 依次走 ..51 .... ..42 三步即可(即:红让车1,黑方停走,红让马2);
+
+* "胜负结果"相关代码
+
+23* **** *          对局结束(胜负不确定).以**开头的代码主要用来手动记录棋谱.
+24* **++  1-0 {红胜}    用于在 [Result ""]标签中备注胜负结果. 黑胜/和棋同理.
+25* **--  0-1 {黑胜}
+26* **..  1/2-1/2 {和棋}
+
+* 其它"胜负结果"相关评论代码 (用花括号包起来,用来记入PGN对局/棋谱文件)
+
+27* 0000 {红(黑)方认输}
+28* ***. {红(黑)方提和}   需要等对方同意, 才算正式和棋  
+29* *... {双方议和}       同意和棋(对局结束)
+
+* "规则判定结果"相关代码 (快速记忆法: **开头,后面跟2个数字)
+
+30* **24 {红(黑)方超时判负}   快速记忆法: 一天是24小时.24表示时间相关
+31* **60 {{红(黑)方回合数超限判和}  如:双方60回合都未吃子,按棋规,判和
+32* **99 {{红(黑)方停止走棋}   如:中途离开,网络掉线,程序意外退出.(久等不来)
+
+* 从棋局截图可直接判定胜负的简单棋局 (快速记忆法: 00开头表示简单,容易判定胜负)
+  不管轮到红方或黑方先走棋,最后(如可能还需要再走几步才能分胜负)都是同样的
+
+33* 00.. {例和}          如:双方都没有可进攻的棋子(都没有车马炮兵卒)
+34* 00-- {{红(黑)方例负}  可直接判定胜负的简单棋局,如:对方单马杀孤将
+
+35* ---- {红(黑)方困毙}   轮到某一方走棋时,无子可走
+36* 99-- {绝杀}          强制判定走棋方为负(即对方胜利). 如:下一步有子可走,
+    但属于自杀式走法(如将帅直线对面);或者后面的走法是简单的连续叫将,无法解救.
+    (快速记忆法:久下无益)
+
+37* ++-- {{红(黑)方长将判负}   快速记忆法: ++代表强行叫将
+38* --.. {{红(黑)方长捉/长拦/重复走棋判和} 包括"双方重复走棋三回合, 不变作和
+
+* 保存/导出 PGN 对局/棋谱文件 (快速记忆法:3个999代表与PGN对局/棋谱有关)
+
+39* 9991 {保存PGN对局}  把单个对局保存为PGN对局/棋谱文件, 再新建另一个PGN文件
+40* 9992 {保存PGN连续对局}    用于在同一个PGN对局/棋谱文件中,连续记录多局对战
+
+* 保存/导出 FEN 棋局文件 (快速记忆法:3个+++代表与FEN棋局有关)
+
+41* +++1 {导出FEN棋局}  把当前棋局的棋子排位,导出为单独的FEN棋局数据串文件
+42* +++2 {导出连续FEN棋局}     在同一个FEN棋局文件中,连续记录多个棋局.
+                       可用于动画演示走棋,或者记录一本棋谱的全部棋局图; 
+43* +++9 {保存FEN棋局到PGN}  把当前棋局的棋子排位,以花括号评论的形式,
+                           添加到当前的PGN对局/棋谱文件
+
+44* //// {红(黑)方悔棋}
+
+45* //++ {开始评论}       切换到评论编辑状态, 输入的文字内容会包含在花括号里
+46* //-- {结束评论}       退出评论编辑状态
+
+
+* 辅助操作代码统计(共26个)
+
+**开头 1+3+2+3=9 (注:其中有1个是单个*开头);
+00开头 1+2=3
+99开头 1+2=3
+++开头 1+3=4
+--开头 1+1=2
+..开头 2
+//开头 1+2=3
+
+ -------------------------
+
+EOF
+}
+
+
+###
+_fun_done () {
+    cat<<EOF
+ -------------------------
+注1: 以下属于自定义的操作代码, 用于手动记录棋谱, 并不是WXF定义的标准代码;
+注2: 后续版本可能会增加新的操作代码, 或者调整操作代码的功能
+
+操作代码版本: $VERSION
+
+序号 代码   中文输出           说明
+
+* "让先(停走)/让子"相关代码
+
+21* .... ...                某方让先(或者停走)
+
+* "胜负结果"相关代码
+
+23* **** *          对局结束(胜负不确定).以**开头的代码主要用来手动记录棋谱.
+24* **++  1-0 {红胜}    用于在 [Result ""]标签中备注胜负结果. 黑胜/和棋同理.
+25* **--  0-1 {黑胜}
+26* **..  1/2-1/2 {和棋}
+  
+-------------------------
+
+EOF
+}
+
+_fun_dev () {
+cat<<EOF
+ -------------------------
+注1: 以下属于自定义的操作代码, 用于手动记录棋谱, 并不是WXF定义的标准代码;
+注2: 后续版本可能会增加新的操作代码, 或者调整操作代码的功能
+
+操作代码版本: $VERSION
+
+序号 代码   中文输出           说明
+
+* "让先(停走)/让子"相关代码
+
+22* ..51 红让车1 (或:黑让车1)  红方/黑方没有1路车(用于记录让子的棋局).如:红方
+  让1路车和2路马, 依次走 ..51 .... ..42 三步即可(即:红让车1,黑方停走,红让马2);
+
+* "评论"相关代码
+
+45* //++ {开始评论}       切换到评论编辑状态, 输入的文字内容会包含在花括号里
+   (退出评论状态: 输入完评论内容后, 再按一次回车键, 换新行, 再同时按 Ctrl 和 C
+   键, 即可返回"走棋代码输入"模式)  
+ -------------------------
+
+* 其它功能
+
+101* 对简单的让子棋(如让单马/单车, 或者其它棋子), 可以直接修改 FEN 棋局数据, 
+     保存到开局 FEN 标签中 (相当于以残局形式进行的开局, 而不是标准开局)
+
+* 待修复的问题
+
+200* 目前暂只对各兵种棋子的走法合理性进行初步分析和判定, 未仔细计算棋子坐标位
+     置和周围棋子的障碍环境, 以及是否处于被叫将的状态. 因此走棋的合理性, 还需
+     要用户自己确定走棋的有效性. (如: 兵/卒未过河前, 是不可以左右移动的)
+
+201* 输入 75.4 (即兵五平四, 或者卒5平4), 会被判定为无效输入, 强行清除
+   问题代码定位标签: T902
+
+202* 如果一方让先, 另一方再走子, 可能出现对局回合数计数错误. 如:
+   问题代码定位标签: T629.1, T629.2
+EOF
+}
+
+#,fuzzy
+# 读取走棋输入时的光标定位
+CLINES=`tput lines`
+CCOL="20"
+
+
+_usage_cn () {
+cat<<EOF
+用法: $APPNAME [选项]
+在命令行下输入 WXF 格式中国象棋代码, 实现中国象棋棋谱(走棋记录)的
+快速编写和录入, 并保存到PGN 对局文件。
+
+* 附: 待开发的功能: 保存多个 FEN 棋局文件到 PGN 文件
+
+选项
+      --ok, --done       显示已完成的功能
+      --dev              显示正在编写的功能 (近期内可能实现设计的功能)
+      --todo             显示规划中的功能 (短期内不太可能实现)
+      --wxf 
+              显示 WXF 世界象棋联合会(World XiangQi Federation)走棋代码示例
+
+      --bug            显示已知问题和缺陷
+      -v, --version    显示版本信息并退出
+      -h, --help       显示帮助信息并退出
+
+请发送缺陷报告给 Careone <emacslocale@126.com>.
+
+主页:
+* 1. 主程序 cchess 定期更新(开发版, 非稳定版本)
+https://github.com/kuiba1949/cchess/
+
+* (DEB 软件包下载)
+https://sourceforge.net/projects/emacslocale/files/cchess/
+EOF
+}    
+
+### HEAD END ###
+
+
+### BODY ###
+
+###---------------
+for option in "$@"; do
+
+    	case "$option" in
+    	 -h | --help)
+	 _usage_cn #暂只提供简体中文帮助信息
+	exit 0 ;;
+
+
+	--wxf | -wxf)
+	  _sample_wxf_00
+	  exit 0 ;;
+
+	--ok | -ok | --done | -done)
+	  _fun_done
+	  exit 0 ;;
+
+	--dev | -dev)
+	  _fun_dev
+	  exit 0 ;;
+
+	--todo | -todo)
+	  _sample_wxf_extra
+	  exit 0 ;;
+
+    	-v | --version)
+	  basename -- "$APPNAME $VERSION"
+	  exit 0 ;;
+
+    	-*)
+	  echo "Unrecognized option \`$option'" 1>&2
+	  exit 1 ;;
+    esac
+
+done
+
+
+###---------------
+
+
+
+
+
+### check and auto mkdir app configure dir
+if [ ! -d "$USERDIR/" ]; then
+  mkdir -p "$USERDIR/";
+fi
+
+### save/export PGN/FEN files to dir:
+if [ ! -d "$PGN_DIR/" ]; then
+  mkdir -p "$PGN_DIR/";
+fi
+
+if [ ! -d "$FEN_DIR/" ]; then
+  mkdir -p "$FEN_DIR/";
+fi
+
+
+### 创建默认配置文件
+if [ ! -e "$CFG" ]; then
+  _init_cfg > "$CFG";
+fi
+
+### 读取配置文件和参数文件, 得到 PGN 和 FEN 的数字序号,用于连续编号
+if [ -r "$PGN_INDEX" ]; then
+    PGN_NUM=`head -1 "$PGN_INDEX" | cut -d' ' -f1`
+
+    ## 如果读取到的序号不是数字,强制更正为1, 并把更正后的数值写入参数文件
+    #  注: 如果是0开头, 如 0001 ,结果待确认
+#    case "$PGN_NUM" in
+#	*[^0-9]*); PGN_NUM=1
+#	echo "$PGN_NUM" > "$PGN_INDEX";		 
+#	;;
+#    esac
+    
+else
+    PGN_NUM=1;    echo "$PGN_NUM" > "$PGN_INDEX";
+    
+fi
+
+## invoke cmd: convert_pgn
+# convert other File format to [PGN-File]
+# usage: convert_pgn 001.xqf 001.pgn
+#It support [.ccm|.che|.chn|.mxq|.xqf]
+
+CONVERT_PGN="convert_pgn"
+
+#
+  if [ "$KEEP_LOG" = 1 ]; then
+    echo -e "\n`date`" >> "$LOG"
+  fi
+
+
+
+#date +%Y.%m.%d_%H%M
+#echo "[Date \"`date +%Y.%m.%d`\"]"
+echo  " ------------------------- "
+
+echo "[Date \"`date +%Y.%m.%d`\"]"
+_show_default_fen
+echo
+#_sample_wxf_00
+#_sample_wxf_extra
+
+echo  " ------------------------- "
+
+## 创建一个标准 PGN 文件头(标签组), 保存到临时文件 (对局结束后,可能需要修改
+#  胜负结果,以及其它标签,最后再合并到正式 PGN 文件)
+#  程序会把当前日期,自动写入 [Date ""] 标签
+#    (问题: 如果是录入昨天或者以前的对局,可能还需要手动修改 Date 标签)；
+
+    PGN_HEAD=`mktemp`
+    _mk_pgn_head > "$PGN_HEAD"
+    
+    ## 更新/写入自定义标签
+    _mk_pgn_custom >> "$PGN_HEAD"
+
+
+    
+### 判断语言环境 CLANG ,决定是显示为简体还是繁体中文来显示走棋记录
+#  TODO: 还可以增加一个英文输出方案,方便外国友人下中国象棋
+#  如: P5+1 p3+1 (含义: 兵五进一 卒3进1)
+
+  case "$CLANG" in
+
+      zh_TW | zh_HK | zh_SG)# 繁体中文
+R1="帥"
+R2="仕"
+R3="相"
+R4="馬"
+R5="車"
+R6="炮"
+R7="兵"
+
+B1="將"
+B2="士"
+B3="象"
+B4="馬"
+B5="車"
+B6="砲"
+B7="卒"
+;;
+      zh_CN | *) # 简体中文
+      R1="帅"
+R2="仕"
+R3="相"
+R4="马"
+R5="车"
+R6="炮"
+R7="兵"
+
+B1="将"
+B2="士"
+B3="象"
+B4="马"
+B5="车"
+B6="炮"
+B7="卒"
+;;
+      
+
+  esac
+  
+
+
+
+while true; do
+    #tput cup "$CLINES" "$CCOL"
+    tput sc
+
+
+    
+read -n 4 STRING
+
+case "$STRING" in
+
+    ### 情况１：让步(让先), 让子
+    ..*)
+	## T629.1:
+	# 问题: 一方让先,另一方走子后, 可能导致后续的回合数计数临时重复(暂停)
+	# 可能是 ..* 条件 与 [1-7]??? 条件代码交替运行时的累加交接异常 
+	# 如:
+	# 1. ...   将５进１
+	# 1. ...   马５进４
+	# 1. 车五进四  炮５进２
+	# 2. 炮五进五  炮５进２
+	# 3. 炮五进二  炮５进２
+	#
+	
+  if [ "$DEBUG" = 1 ]; then
+    echo
+      echo -e "\tL81: ID=$ID, LOOP=$LOOP; TRUN=$TRUN"
+  fi
+  
+  tput rc; tput ed;
+  if [ "$TRUN" = 1 ]; then
+    echo -en "$LOOP. ...   " | tee -a "$PGN_BODY";  
+    TRUN=0
+  else echo -e "..." | tee -a "$PGN_BODY"; 
+       let "LOOP += 1";
+       TRUN=1;
+  fi
+
+  tput sc
+  #tput cup "$CLINES" "$CCOL"
+  let "ID += 1";
+  continue;
+  ;;
+
+  ### 情况２：正常棋子走法
+  # S1-S4: 截取的第1到4个字符
+  # SN1-SN4: 转换后的中文走棋文字，如：帅五平四，将5平4．
+  #     当黑方的S2/S4是数字1-9时， SN2=S2, SN4=S4
+  # SN8: 转换后中文走法的前2个字，主要是针对多子同线的情况．
+  #      如：帅五，前/中/后兵，一/二/三/四/五兵
+  
+
+    [1-7][1-9\+\-\.abcdeABCDE][\+\-\.][1-9])
+#      	[1-7]???)
+
+		## T629.2:
+	# 问题: 一方让先,另一方走子后, 可能导致后续的回合数计数临时重复(暂停)
+	# 可能是 ..* 条件 与 [1-7]??? 条件代码交替运行时的累加交接异常 
+	# 如:
+	
+    S1=`echo "$STRING" | cut -c 1`
+    S2=`echo "$STRING" | cut -c 2`
+    S3=`echo "$STRING" | cut -c 3`
+    S4=`echo "$STRING" | cut -c 4`
+    
+if [ "$DEBUG" = 1 ]; then
+  echo -e '\t'
+  #echo "L155: TRUN=$TRUN; ${S1}${S2}${S3}${S4}"
+  #  sleep 1
+fi
+
+    ### 走棋代码第1位
+    
+    case "$TRUN" in
+	1)
+    SN1=`echo "$S1" | sed 's/1/帅/g;s/2/仕/g;s/3/相/g;s/4/马/g;s/5/车/g;s/6/炮/g;s/7/兵/g'`
+    ;;
+	
+	0)
+    SN1=`echo "$S1" | sed 's/1/将/g;s/2/士/g;s/3/象/g;s/4/马/g;s/5/车/g;s/6/炮/g;s/7/卒/g'`
+    ;;
+	
+	*)SN1="$S1";
+	  #break;
+	  #contiune;
+    ;;    
+    esac
+
+    
+    ### 走棋代码第2位
+
+    case "$S2" in
+	[1-9])
+	    if [ "$TRUN" = 1 ]; then
+		SN2=`echo $S2 | sed 's/1/一/g;s/2/二/g;s/3/三/g;s/4/四/g;s/5/五/g;s/6/六/g;s/7/七/g;s/8/八/g;s/9/九/g'`
+
+ 	    else #黑方走法
+		if [ "$BLACK_MOVE_FORMAT" = 1 ]; then
+		    # =1: 黑方走法用英文半角数字. 如果用字母 KABNRCP
+		    #    分别代表帅仕相马车炮兵(大写为红方,小写为黑方)时,
+		    #    需要采用这种模式(如保存为英文用户可读取的PGN文件,
+		    #    或者方便外国友人练习中国象棋.如 P5+1 兵五进一.
+		    #
+		    # =0 或者其它: 用中文全角字符表示(排版整齐,适合中文用户)
+		    #    齐效果.默认为0
+		    SN2="$S2"
+		else
+		    SN2=`echo $S2 | sed 's/1/１/g;s/2/２/g;s/3/３/g;s/4/４/g;s/5/５/g;s/6/６/g;s/7/７/g;s/8/８/g;s/9/９/g'`
+		fi
+	    fi
+	    SN8="${SN1}${SN2}"; #标准走法
+	    ;;
+	
+	[\+\.\-aAbBcCdDeE])
+	
+	    SN2=`echo $S2 | sed 's/+/前/g;s/\./后/g;s/-/中/g;s/[aA]/一/g;s/[bB]/二/g;s/[cC]/三/g;s/[dD]/四/g;s/[eE]/五/g'`
+	    
+	    SN8="${SN2}${SN1}";
+	    ## 特殊走法，如: 前/中/后兵平一；一/二/三/四/五/兵平四
+	    # +/-/. = 前/中/后
+	    # a/b/c/d/e = 一/二/三/四/五
+	    ;;
+	*)SN2="$S2";
+	  SN8="${SN1}${SN2}"; #标准走法
+	    ;; 
+    esac
+
+    
+    ### 走棋代码第3位
+
+       case "$S3" in
+	   '+')
+	         case "$CLANG" in
+
+		     zh_TW | zh_HK | zh_SG)# 繁体中文
+		      SN3="進" ;;
+		     zh_CN | *) SN3="进" 
+		     ;;
+		 esac
+		 ;;
+	      
+	   '-')SN3="退" ;;
+	   '.')SN3="平" ;;
+	   *)SN3="$S3" ;;
+	esac
+
+
+    ### 走棋代码第4位
+        case "$S4" in
+	[1-9])
+	    if [ "$TRUN" = 1 ]; then #红方走法
+		SN4=`echo $S4 | sed 's/1/一/g;s/2/二/g;s/3/三/g;s/4/四/g;s/5/五/g;s/6/六/g;s/7/七/g;s/8/八/g;s/9/九/g'`
+	    else #黑方走法
+		if [ "$BLACK_MOVE_FORMAT" = 1 ]; then
+		    # =1: 黑方走法用英文半角数字； =0或者其它: 中文全角字符,有更好的排版对齐效果.默认为0
+		    SN4="$S4"
+		else
+		    SN4=`echo $S4 | sed 's/1/１/g;s/2/２/g;s/3/３/g;s/4/４/g;s/5/５/g;s/6/６/g;s/7/７/g;s/8/８/g;s/9/９/g'`
+		fi
+		
+	    fi
+	    ;;
+	
+	*) SN4="$S4" ;
+	;;
+	esac
+
+	### 判断走棋是否合法
+	case "$S1" in
+	    1) #帅／将
+		case "$S2" in
+		    4 | 6)
+			if [ "$S4" = '1' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '-' ]; then : ;
+		      elif [ "$S4" = '5' ] && [ "$S3" = '.' ]; then : ;
+		      else
+			  tput rc; tput ed; continue;
+			  :
+		      fi
+		      
+			  ;;
+		    
+		    5)
+			if [ "$S4" = '4' ] && [ "$S3" = '.' ]; then : ;
+		      elif [ "$S4" = '6' ] && [ "$S3" = '.' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '-' ]; then : ;
+			else tput rc; tput ed; continue;
+			fi
+			
+			  #continue;
+			  ;;
+		    
+		    *) 
+			tput rc; tput ed; continue;
+		      ;;
+		    esac
+		   ;;
+	    2): #仕／士
+	      case "$S2" in
+	      	  4 | 6)
+			if [ "$S4" = '5' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '5' ] && [ "$S3" = '-' ]; then : ;
+		      else tput rc; tput ed; continue;
+		      fi
+		        ;;
+		    
+		    5)
+			if [ "$S4" = '4' ] && [ "$S3" = '+' ]; then : ;
+			elif [ "$S4" = '4' ] && [ "$S3" = '-' ]; then : ;
+			elif [ "$S4" = '6' ] && [ "$S3" = '+' ]; then : ;
+			elif [ "$S4" = '6' ] && [ "$S3" = '-' ]; then : ;
+			else tput rc; tput ed; continue;
+			fi
+			  ;;
+		    *) 
+			tput rc; tput ed; continue;
+		      ;;
+		   esac
+				  
+	    ;;
+	    3): #相／象
+	      case "$S2" in
+	      	   3)
+			if [ "$S4" = '5' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '5' ] && [ "$S3" = '-' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '-' ]; then : ;
+		      else tput rc; tput ed; continue;
+		      fi
+		        ;;
+		    
+		    7)
+			if [ "$S4" = '5' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '5' ] && [ "$S3" = '-' ]; then : ;
+		      elif [ "$S4" = '9' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '9' ] && [ "$S3" = '-' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+	      	    5)
+			if [ "$S4" = '3' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '3' ] && [ "$S3" = '-' ]; then : ;
+		      elif [ "$S4" = '7' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '7' ] && [ "$S3" = '-' ]; then : ;
+		      else tput rc; tput ed; continue;
+		      fi
+		        ;;
+		    
+		    1)
+			if [ "$S4" = '3' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '3' ] && [ "$S3" = '-' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+		    9)
+			if [ "$S4" = '7' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '7' ] && [ "$S3" = '-' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			  ;;
+		    *) 
+			tput rc; tput ed; continue;
+		      ;;
+	      esac
+	      ;;
+	    
+	    4)
+		## 马: 不会出现三马并线的"中马(进/退/平)几" (第2位代码-),或者
+		# 4/5个马并线的"(一/二/三/四/五)马平几"的走法(第2位代码abcde).
+		# 车, 炮同理.
+		case "$S2" in
+		    [a-eA-E\-])tput rc; tput ed; continue;
+		    ;;
+		esac
+		
+		;;
+	    
+	    5): #车
+		case "$S2" in
+		    [a-eA-E\-])tput rc; tput ed; continue;
+		    ;;
+		esac
+		;;
+	    
+	    6): #炮
+	        case "$S2" in
+		    [a-eA-E\-])tput rc; tput ed; continue;
+		    ;;
+		esac
+	    ;;
+	    7) #兵／卒
+	      case "$S3" in
+                  +) #兵／卒前进时只能进一步
+		      if [ "$S4" != 1 ]; then
+			  tput rc; tput ed; continue;
+		      fi
+		      
+		      ;;
+                  -) #兵／卒不能后退
+		      tput rc; tput ed; continue;
+		      ;;
+                  .) #兵／卒左右平移时，只能移到相邻的竖线
+
+		      case "$S2" in
+			  # 两个或者最多5个兵／卒在同一条直线的情况
+			  [a-eA-E+-.]): ;;
+			  
+			  5)# T902: 75.4 报错(应为兵五平四/卒5平4)
+			if [ "$S4" = '4' ] || [ "$S4" = '6' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  
+			  7)
+			if [ "$S4" = '8' ] || [ "$S4" = '6' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  3)
+			if [ "$S4" = '4' ] || [ "$S4" = '2' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			4)
+			if [ "$S4" = '5' ] || [ "$S4" = '3' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  6)
+			if [ "$S4" = '5' ] || [ "$S4" = '7' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			
+			8)
+			if [ "$S4" = '7' ] || [ "$S4" = '9' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  2)
+			if [ "$S4" = '3' ] || [ "$S4" = '1' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  
+			1)
+			if [ "$S4" = '2' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  9)
+			if [ "$S4" = '8' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  *)
+		      tput rc; tput ed; continue;
+		      ;;
+			  
+		      esac
+		      ### CASE　兵／卒 S2 END
+		      
+		      #*)
+			tput rc; tput ed; continue;
+		        ;;
+	      esac
+	      
+ 		      ### CASE 兵／卒 S3 END
+	      ;;
+	    
+	    *)tput rc; tput ed; continue; ;;
+	    
+	esac
+		      ### CASE 7种棋子走子合法性判断完毕 END	
+	
+	# 输出中文走棋记录．走棋后再把步数 ID +1，为下一步的步数计数器做准备
+	tput rc; tput ed
+	if [ "$TRUN" = 1 ]; then
+	    # 红方走法
+	    echo -en "$LOOP. ${SN8}${SN3}${SN4}  " | tee -a "$PGN_BODY";
+	    TRUN=0; let "LOOP += 1";
+	else # 黑方走法
+	    echo -e "${SN8}${SN3}${SN4}" | tee -a "$PGN_BODY";
+	    TRUN=1;
+	fi    
+	tput sc
+	#tput cup "$CLINES" "$CCOL"
+	
+	# 步数　+1，为下一步做准备
+	let "ID += 1";
+    
+    if [ "$DEBUG" = 1 ]; then
+      echo
+      echo -e "\tL250: ID=$ID, LOOP=$LOOP; TRUN=$TRUN"
+    fi
+#esac  
+    continue;
+    ;;
+
+# 辅助操作代码 T699
+  \*\*\*\* | \*\*++ | \*\*-- | \*\*..)
+      ## 代码依次代表:
+      # * {对局结束, 胜负未知} 
+      # 1-0 {红胜} 
+      # 1-0 {红胜} 
+      # 1/2-1/2 {和棋}
+
+      GAMEOVER=1 #对局是否结束. 1=结束,0=未知
+
+      # 对局胜负结果代码, 用于保存到[Result ""]标签, 以及走法的最后面
+      # 强制初始化变量,防止把上一局的数值,带到下一局,造成混乱
+      
+      STR_RESULT="*"
+      unset STR_ABOUT_RESULT 
+      
+      case "$STRING" in
+	  \*\*\*\*)STR_RESULT="*"; STR_ABOUT_RESULT="{对局结束}"
+     	    tput rc; tput ed;
+	    echo -e "${STR_RESULT} ${STR_ABOUT_RESULT}\n" | tee -a "$PGN_BODY"
+		   ;;
+	  \*\*++)STR_RESULT="1-0"; STR_ABOUT_RESULT="{红胜}" 
+     	    tput rc; tput ed;
+	    echo -e "${STR_RESULT} ${STR_ABOUT_RESULT}\n" | tee -a "$PGN_BODY"
+	    ;;
+	    
+	    \*\*--)STR_RESULT="0-1*"; STR_ABOUT_RESULT="{黑胜}" 
+	     tput rc; tput ed;
+	     echo -e "${STR_RESULT} ${STR_ABOUT_RESULT}\n" | tee -a "$PGN_BODY"
+		    ;;
+		    
+	    \*\*..)STR_RESULT="1/2-1/2"; STR_ABOUT_RESULT="{和棋}"
+	      tput rc; tput ed;
+	      echo -e "\n${STR_RESULT} ${STR_ABOUT_RESULT}\n" | tee -a "$PGN_BODY"
+		    ;;
+	    *)## 其它操作代码的功能待确认. 未有效识别前,一律清除,重新输入
+		tput rc; tput ed; continue; ;;
+      esac
+      
+
+      
+      ### 保存的 PGN 文件名命名规则确认
+      PGN_NAME_STYLE="2"
+
+      if [  "$PGN_NAME_STYLE" = 1 ]; then
+	  
+	  ## 方案1 (暂不使用). 这一方案仅用于生成 PGN_UUID 索引序号,并写入
+	  # [Index ""]标签；
+      #
+      #PGN_SN="$(date +%s)"  ##时间代码(10位数字,精确到秒)
+
+      #
+      #PGN_UUID="_1234567890_17AA0001" # 19位字符
+      
+      
+      ## 把数字 PGN_NUM 强制转换为4位数. 如果原数值大于4位,截取最后4位
+      #  如果累计后大于 9999,重新从 0001 开始编号(暂未实现).
+      #     
+      #  注1: printf "%4s" 12345 的效果是保证不低于4位数.超过4位,显示全部
+      #  注2: 当前代码是保证不低于4位数,5位数以上的,直接提取,不需要用 printf
+      #       转换；
+
+      ## 如果数字位数低于4位数,如 1-999, 需要在序号数字前补0,变成4位数,
+      #  方便按文件名排序
+
+        if [ "$PGN_NUM" -le 999 ]; then
+	  PGN_4NUM=`printf "%4s\n" "$PGN_NUM" | sed '/ /s//0/g'`
+        elif [[ "$PGN_NUM" -gt 9999 ]]; then
+	  PGN_4NUM="0001"; PGN_NUM=1;
+	  ## 每个对局结束后,或者在退出程序前,需要把 PGN_NUM 的数值(即序号)
+	  #  写入配置文件. 这样下次运行程序,会接着上次的编号. 
+        else
+	  PGN_4NUM="$PGN_NUM" ;
+        fi
+      
+
+      PGN_UUID="${PGN_SN}_${PGN_NUM}"
+      PGN_FILE="$PGN_DIR/$PGN_NUM.pgn"
+#      PGN_FILE="$PGN_DIR/$PGN_UUID.pgn"      
+
+      else ## PGN 命名规则2: 按 年月日-时分秒 定义,方便排序, 查找
+         PGN_FILE="$PGN_DIR/`date +%Y-%m%d_%H%M.%S`.pgn"   
+      fi
+      
+      ## 更新胜负结果 Result 标签, 以及其它标签,
+ 
+      sed -i "/^\[Result /c[Result \"$STR_RESULT\"]" "$PGN_HEAD"
+      
+      cat "$PGN_HEAD" >> "$PGN_FILE"
+    
+
+      ## 更新/写入 FEN 棋局数据串, 如
+#[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+      _mk_default_fen >> "$PGN_FILE"
+
+      ## 此时 PGN_BODY 临时文件中, 已经包含对局胜负结果, 以及结果的文字说明,
+      #  如: {红胜}
+      cat "$PGN_BODY" >> "$PGN_FILE"
+      #echo -e "${STR_RESULT} ${STR_ABOUT_RESULT}\n" >> "$PGN_FILE"
+
+      break; #T719: 保存/导出PGN/FEN文件后,退出程序
+
+
+      
+  #tput rc; tput ed; continue; 
+  ;;
+
+  //++)# TODO:
+      # 进入评论模式(暂时未实现. 按 Ctrl + C 会直接退出程序)
+      tput rc; tput ed;
+      continue;
+      
+      #
+      echo "  !!! 进入\"评论模式\" !!!"
+      echo -e "  返回\"走棋模式\": 输入评论内容后 (可以多次换行), 再多按一次回车键\
+换行,最后再同时按 Ctrl + C, 即可返回\"走棋模式\"\n"      
+
+      PGN_DESC=`mktemp`
+      echo -e " {\n" > "$PGN_DESC"
+      
+      ## 注: 输入内容后 (可以多次换行), 再多按一次回车键换行,
+      #  最后再按 Ctrl + C 退出评论模式,
+      #     返回走棋模式
+      cat >> "$PGN_DESC"
+      
+      #
+      echo -e "\n}" >> "$PGN_DESC"
+
+      cat "$PGN_DESC" >> "$PGN_BODY"     
+      tput rc; tput ed;
+      continue; 
+  ;;
+
+   
+	### 其它无效的棋子或者走法，清除错误的输入后，等待重新输入
+#	[^1-7]* | [1-7][^1-9+-.abcdeABCDE]* | *)
+ *)
+  tput rc; tput ed; continue; 
+    ;;
+esac
+
+    echo "$PGN_NUM" > "$PGN_INDEX"
+done
+
+#
+
+      DEBUG=1
+  if [ "$DEBUG" = 1 ]; then
+    leafpad "$PGN_FILE" &
+  fi
+  
+exit 0;
+
