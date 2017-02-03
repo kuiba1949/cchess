@@ -1,0 +1,3909 @@
+#! /bin/bash 
+# /bin/bash #-x
+#set -e
+
+# 2017-2-03
+# original filename: cchess-edit
+## cchess: a PGN generator, which run in command line only
+
+### HEAD ###
+### define ###
+
+
+### 1. 程序版本, 日志, 调试, 语言环境相关 ###
+APPNAME="cchess-edit"
+VERSION="0.3"
+
+# 1.1 是否记录日志
+KEEP_LOG=0
+
+## 1.2 调试开关
+SHOW_PGN=1  #保存 PGN 对局后, 是否显示 PGN 文件内容；
+SHOW_DATETIME=1  #程序开始时是否以 Date, Time 标签形式显示当前时间
+SHOW_DEFAULT_FEN=0  #程序开始时是否显示标准开局的 FEN 标签
+
+SHOW_HOWTO=1  #是否显示简单的4位操作代码示例
+
+## SHOW_COUNT: (见TAG 1400) 摆子模式是否显示各棋子数量汇总
+#SHOW_COUNT=1  
+
+ENABLE_CFG=0  #是否生成默认的 cchess.cfg 配置文件(功能待开发)
+
+DEBUG=0
+
+## 1.3 读取当前语言环境，是 zh_CN*, zh_TW*, zh_HK*, 还是其它
+# 例：LANG=zh_CN.UTF-8 --> CLANG=zh_CN
+CLANG=`echo ${LANG%%.*}`
+
+
+## 1.5
+## 见 TAG1553: PGN_NAME_STYLE
+PGN_NAME_STYLE="1"
+
+      ### 保存的 PGN 文件名命名规则 (默认采用方案1). 各方案示例:
+      # 方案1: 17av0001.pgn (推荐和默认的方案)
+      # 方案2: 2017-1231_2359-59-x1x2x3x4x5.pgn
+      # 方案3: 17av0001_2017-1231_2359-59.pgn
+      # 或者 方案3: 17av0001_2017-1231_2359-59-x1x2x3x4x5.pgn
+
+
+### 1.8 显示生成的 PGN 对局/棋谱文件的文本编辑器,或者TTY控制台显示时是否
+#   带行号显示 (主要用于调试).
+#   见 TAG1714: PGN_VIEWMODE, SHOW_HEAD_LINES, SHOW_TAIL_LINES
+#    注: 先用 `tput lines` 命令检测当前控制台的总行数, 然后自动把
+#    SHOW_HEAD_LINES 和 SHOW_TAIL_LINES 设为总行数的一半,再减1, 如: 40->18
+#
+#  PGN_VIEWMODE =0: 只显示最前和最后各10行(不带行号)；
+#  =1:(默认方案) 与=0类似, 但同时显示行号(用grep -n 实现)
+PGN_VIEWMODE=1
+declare -i SHOW_HEAD_LINES  SHOW_TAIL_LINES
+declare -i MAX_LINES  FILE_LINES
+
+
+
+### 2. 程序相关目录, 用户默认的 PGN/FEN 文件保存目录, 以及其它 ###
+SHARE_DIR="/usr/share/$APPNAME"
+
+CFG_DIR="$HOME/$APPNAME"
+#CFG_DIR="$HOME/.config/$APPNAME"
+
+CFG_FILE="$CFG_DIR/$APPNAME.cfg"
+LOG="$CFG_DIR/$APPNAME.log"
+
+
+## for option --uuid (root only! never show in option --help)
+ETC_DIR="$SHARE_DIR/etc"
+## UUID_FILE="$ETC/UUID"
+# 见 _option_uuid ()
+
+#
+PGN_DIR="$HOME/$APPNAME/pgn"
+FEN_DIR="$HOME/$APPNAME/fen"
+
+### TODO 39: 
+## .pgn_index, .fen_index 文件: 用来记录上次的序号已经编到多少数字了
+#  每次运行程序,都会读取这个文件
+PGN_INDEX="$PGN_DIR/.pgn_index"
+FEN_INDEX="$FEN_DIR/.fen_index"
+
+
+### 3.1 棋子走法/让子模式/（以及暂未开发的摆子模式）相关 ###
+
+## MODE_MISS: 是否有过让子操作。
+# 1: 有让子；0或者空：未让子（即标准开局）；2：摆子模式
+
+#
+declare -i STEP=1 LOOP=1
+
+## TRUN： =1:红方走棋；=0：黑方走棋；=空：可以在棋局开始前让子或摆子布局.
+TRUN='' 
+
+declare -i PAUSED
+#MISS
+
+declare -a piece_die piece_dxy piece_dstep
+
+# TEXT_MOVE
+## 见定义 D1125: TEXT_MOVE: 每步走法的4个字, 如 车五进一
+
+
+### 内部参数设置,一般不需要调整
+# 黑方走法的数字格式: 0代表中文全角数字(默认方案,排版对齐效果好);
+# 1: 代表英文半角数字；其它数值: 等同于=0
+#BLACK_MOVE_FORMAT="0"  #参数已失效
+
+
+## STEP: 红方/黑方任意一方每走一步,计数+1
+## LOOP: 第几回合: 红,黑双方各走完一步后, 计数+1(实际是黑方走后+1)
+## TRUN: 1=轮到红方走; 0=黑方走. 开局时TRUN的值默认为空。
+#   红方或黑方走棋后，会交替把1变0,0变1
+
+## PAUSED: 上一步对方是否有让先(停走). 1代表停走,0代表正常走棋
+## NO_PIECE:   之前是否已经让过这个棋子(即确认棋盘上还有没有这个棋子)
+#          1代表找不到这个棋子(棋子已让过,或者被吃了)；
+#          0代表棋子还在, 或者可以走这步棋
+#
+# piece_die (数组): 被吃掉的所有棋子, 保存在数组 piece_die 里
+#    数组最多31个数值(0-30) . 如果最后一个数值是 K 或者 k
+#    表示红帅/黑将被吃,棋局结束.(棋盘上至少还有最后一个帅或将)
+#
+#    数组里的棋子定义示例:
+#    K(大写,红帅), k(小写,黑将), R8(红:八路车), r8(黑:8路车)
+#    这记录了棋子的原始位置, 用来跟踪每个棋子的完整走子路线.
+#    如果某个棋子如 R8(红车八)走棋后,在其它的位置被吃掉,写进
+#    piece_die 数组的代码仍然应该记作R8
+#
+# piece_dxy (数组): 依次记录被吃掉的棋子的坐标(ICCS坐标格式)；
+#     如: a0(红左车默认位置), i0(红右车默认位置),
+#        a9(黑1路车默认位置), i9(黑9路车默认位置)；
+#
+# piece_dstep (数组):  依次记录棋子被是在第几步被吃掉的
+#        (对应STEP变量,即从1开始的整数)；
+#
+#  注: 如果有吃子, 三个数组 piece_die, piece_dxy, piece_dstep 应同时更新
+#    数组的索引也是同步对应, 不能错位；
+
+
+### 4.1： 棋子坐标相关 ###
+#
+## 定义 FEN 数据和棋盘上各点位的棋子数组.
+## 参照中国象棋 ICCS 坐标格式执行
+#  顺序: 每一行(从上到下, 即从黑方底线到红方底线, 数组9到数组0. 每个数组9个值
+# 用于随时更新 FEN 棋子布局, 方便导出
+#
+# 默认开局: 
+#[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+
+## 正常开局时, 棋盘上某一行(row9-row0)的原始棋子代码,中间没有空格,后面不带/
+# LFEN_00   
+
+## LFEN_BETA: 走棋后, 某一行棋子代码排位.可能中间出现 1c511 这样的无效格式.
+#    需要把相邻的数字(即无子空位)合并, 调整为 1c7 的合法格式 (即 LFEN_OK)；
+#    
+# LFEN_BETA #
+# LFEN_OK
+
+## LFEN_FROM: 走棋前的棋子坐标； LFEN_TO: 走棋后,棋子的新坐标；
+# LFEN_FROM
+# LFEN_TO
+
+## 超级数组 pos[*]: 用两位数字坐标(10-99，共90个值，对应棋盘上90个坐标点位)，
+## 每个元素的值是大小写字母： KABNRCP/kabnrcp/1
+#   (1或空：代表不确定当前坐标是什么棋子)
+## 最前面的数组值序号 0-9 当作冗余值，不使用。
+declare -a pos
+
+declare -a row9 row8 row7 row6 row5 row4 row3 row2 row1 row0
+# 标准开局中, row8=row5=row4=row1=空行无子
+
+### row of Top
+rowt=( '1 ' '2 ' '3 ' '4 ' '5 ' '6 ' '7 ' '8 ' '9 ' )
+
+## row of Bottom
+rowb=( 九 八 七 六 五 四 三 二 一 )
+
+### ----------------------
+row9=( r n b a k a b n r )
+
+row8=( 1 1 1 1 1 1 1 1 1 )
+
+row7=( 1 c 1 1 1 1 1 c 1 )
+row6=( p 1 p 1 p 1 p 1 p )
+
+row5=( ${row8[@]} )
+row4=( ${row8[@]} )
+
+row3=( P 1 P 1 P 1 P 1 P )
+row2=( 1 C 1 1 1 1 1 C 1 )
+
+row1=( ${row8[@]} )
+
+row0=( R N B A K A B N R )
+#row0=( 车 马 相 仕 帅 仕 相 马 车 )
+### ======================
+
+      ## 4.2： 数组定义：每种棋子的坐标
+      # xy_r1: XY of Red piece 1# (King）. 红将坐标数组。里面保存的是两位数字坐标，
+      #          如：红兵（默认五子的位置）： xy_r7=( 13 33 53 73 93 )
+      # 用途：1.记录每种棋子的坐标；
+      #      2.走棋/摆子时，检查每种棋子总数是否超标（> 1/2/5 个）
+declare -a xy_r1 xy_r2 xy_r3 xy_r4 xy_r5 xy_r6 xy_r7
+declare -a xy_b1 xy_b2 xy_b3 xy_b4 xy_b5 xy_b6 xy_b7
+
+
+### 5. 棋子走法输出内容相关 ###
+#   STR_RESULT: 胜负代码. 用于写入 [Result ""]标签；
+#       如: 1-0(红胜), 0-1(黑胜), 1/2-1/2(和棋), * (对局结束). 
+#
+#   TEXT_RESULT: 胜负输出的文字备注. 以评论的形式, 写在花括号内.
+#       如: {红胜},{黑胜},{和棋},{对局结束}
+#
+# STR_RESULT 
+# TEXT_RESULT
+
+### 6. PGN_UUID 对局索引相关 ###
+PGN_SN=`date +%s`
+declare -i PGN_NUM FEN_NUM
+
+### T138: 
+## 提取随机字符, 保存到变量 STR_TMP (10位字符), 作为 PGN_UUID 最后面一段附加码
+#  最大限度防止 PGN_UUID 重码(即使是同一电脑同时运行多个 cchess 进程).
+#  如: /tmp/tmp.Inqcwg4DVq --> Inqcwg4DVq
+#
+# STR_TMP=`mktemp -u`
+# ## 在即将保存对局结果时,再对 STR_TMP 取值,即在获取 date +%s UNIX 纪元时的
+## 同时,才取值
+
+# PGN_4DATE=''
+
+## PGN/FEN 对局索引 PGN_UUID 的编码规则1: (暂定方案, 未正式使用, 功能开发中)
+
+## PGN_UUID 的构成:
+#  PGN_UUID = PGN_SN (10位) + (_) + PGN_4DATE (4位) + PGN_NUM (4位) + STR_TMP (10位)
+#  如: PGN_UUID="_1234567890_17AA0001" # 29位字符
+#
+## 第1组: PGN_SN (10位序列号附加码), 即用当前时间的UNIX纪元时字符串
+#  (通常为10位数字), 当成 PGN_UUID
+#  的前置字符串, 避免因为 PGN_UUID 序号重号产生的意外覆盖和PGN丢失.
+#
+## 第2组: PGN_4DATE (4位)
+# 前4位为年月日代码; 后４位数字为序号0001-9999, 超过9999后从0001重新计数
+# DATE_2Y: 第1,2位字符: 17代表2017年
+# DATE_1M: 第3位字符:   1-9:代表1-9月; 小写字母abc: 10-12月
+# DATE_1D: 第4位字符:   1-9: 1-9日; 小写字母a-v: 10-31日
+
+## T177:
+
+_mk_pgn_datetime () {
+
+    ## 记录当前的 Unix纪元时字符串 DATE_UNIX (共10位数字,精确到秒),再转换为
+    ## PGN_UUID 使用的字符串格式
+## date 参数用法示例:
+##    
+
+## $ date -d  '@2147483647'
+## 2038年 01月 19日 星期二 11:14:07 CST
+##
+## DATE_06HMS: 时分秒(共6位数字)
+## $ date -d  '@2147483647' +%H%M%S
+## 235959 
+
+ ### 一定要等到要用 _mk_pgn_datetime 函数了, 再对 DATE_UNIX 取值. 不要提前运行
+## DATE_UNIX=`date +%s`
+
+### 生成10位随机字符串, 用作 PGN_UUID 的附加码(随机码), 防止重号
+STR_TMP=`mktemp -u | cut -d'.' -f2`
+
+    
+## 
+DATE_06HMS=`date -d "@${DATE_UNIX}" +%H%M%S`
+
+# DATE_2Y=`date +%y`
+DATE_2Y=`date -d "@${DATE_UNIX}" +%y`
+
+## ----
+## 先得到月份的2位数字(01-12),再转换为1位代码
+# DATE_1M=`date +%m`
+DATE_1M=`date -d "@$DATE_UNIX" +%m`
+
+case "$DATE_1M" in
+      0[1-9])# 去掉前面多余的0, 只保留第2个数字
+	  DATE_1M=`echo "$DATE_1M" | cut -c 2`
+	   ;;
+
+      1[012])if [ "$DATE_1M" = 10 ]; then DATE_1M='a';
+	   elif [ "$DATE_1M" = 11 ]; then DATE_1M='b';
+	   elif [ "$DATE_1M" = 12 ]; then DATE_1M='c';
+	   else DATE_1M=`echo "$DATE_1M" | cut -c 2`
+	     fi
+	   ;;
+    
+    
+      *)DATE_1M=`echo "$DATE_1M" | cut -c 2`
+	;;
+    
+  esac
+
+## ====
+
+## ----
+## 先得到 '日' 的2位数字(01-31),再转换为1位代码
+# DATE_1D=`date +%d`
+DATE_1D=`date -d "@$DATE_UNIX" +%d`
+
+  case "$DATE_1D" in
+      0[1-9])# 去掉前面多余的0, 只保留第2个数字
+	  DATE_1D=`echo "$DATE_1D" | cut -c 2`
+	   ;;
+
+      1[0-9]) DATE_1D=`echo "$DATE_1D" | cut -c 2 | tr '0-9' 'a-j'`
+	   ;;
+      2[0-9]) DATE_1D=`echo "$DATE_1D" | cut -c 2 | tr '0-9' 'k-t'`
+	   ;;
+        3[01])if [ "$DATE_1D" = 30 ]; then DATE_1D='u';
+	   elif [ "$DATE_1D" = 31 ]; then DATE_1D='v';
+	   else DATE_1D=`echo "$DATE_1D" | cut -c 2`
+	     fi
+	;;  
+    
+      *)DATE_1D=`echo "$DATE_1D" | cut -c 2`
+	;;
+    
+  esac
+## ====
+
+  PGN_4DATE="${DATE_2Y}${DATE_1M}${DATE_1D}"
+
+  #DEBUG=1 
+  if [ "$DEBUG" = 1 ]; then
+    echo "L227: `date -I`  PGN_4DATE=$PGN_4DATE"
+    sleep 1
+  fi
+
+}
+
+
+
+  
+### 11: 其它定义及待开发/预设的功能变量 ###
+
+###
+
+### T93: 
+## PGN_HEAD: 单个对局的 PGN 临时文件头.
+# 主要用于同一个PGN文件中,有多个对局的情况:
+# 把每个对局都写入单独的临时文件,是为了方便修改标签,如胜负结果,
+# FEN棋局修改(如残局图, 或非标准开局, 让子,等), PGN索引序号等,
+# 而不会对同一PGN文件中的其它对局的标签产生误操作或批量修改；
+#     注: 在保存 PGN 时运行即可.
+## PGN_HEAD=`mktemp` 
+
+## 记录中文走法(如炮二平五,车1进1)到临时文件,
+# 便于实现悔棋后的数据修改操作. 开始新对局后,会重新运行一次,不会干扰上次对局
+# 的数据
+## T125: 
+#PGN_BODY=`mktemp`
+
+##  init, 用于记录导出的 PGN 对局/棋谱文件，以及 FEN 棋局的序号，
+# 并保存到配置文件 cchess.cfg, pgn.index, fen.index ．
+# 类似于数码相机里照片的文件名序号，
+# 防止保存时文件重名造成的覆盖和数据丢失
+
+
+### 91. 内部函数及选项帮助功能输出 ###
+
+_init_cfg () {
+    cat<<EOF
+[$APPNAME $VERSION] 
+
+### 默认保存/导出的文件序号
+[PGN]
+PGN_NUM="1"
+
+[FEN]
+FEN_NUM="1"
+EOF
+}
+
+
+### PGN 相关
+# PGN 文件结构组成:
+# 1. 文件头(标签组), 先写入临时文件,用于结束对局后修改胜负,
+# 2. 自定义标签组
+# 3. 走棋记录,及胜负结果代码, 以示简单的胜负说明文字.
+#    也先写入临时文件,方便悔棋后,删除原来的部分走法； 
+# 4. 附加的评论(以花括号包起来). 可以在保存/导出 PGN 后,把手动编写的评论,
+#    添加到 PGN 文件后面, 用来制作棋谱.
+
+# [Date "`date +%Y.%m.%d`"]
+# [Date ""]
+_mk_pgn_head () {
+cat <<EOF
+[Game "Chinese Chess"]
+[Event ""]
+[Round ""]
+[Date ""]
+[Site ""]
+[Red ""]
+[RedTeam ""]
+[Black ""]
+[BlackTeam ""]
+[Result "*"]
+[Opening ""]
+[Variation ""]
+[ECCO ""]
+EOF
+}
+
+
+## 自定义的标签
+# Format: 即棋子走法的记录格式,有 Chinese, WXF, ICCS 三种
+#     默认为 Chinese (即炮二平五)的形式.
+# Index: 对局的序列号,方便定位同一PGN文件中的多个对局,或者制作棋谱
+#     数值一般为19位字符, 如: 1234567890_17aa0001
+#     也是默认的 PGN/FEN 文件名.
+# Time: 记录对局的时间, 时分秒
+# TimeControl: 对局限时规则, 如 "局时 10:00 步时 3:00"
+
+
+# [Time "`date +%H:%M:%S`"]
+# [Time ""]
+# [Format "Chinese"]
+# [TimeControl ""]
+
+_mk_pgn_custom () {
+cat <<EOF
+[Generator "cchess"]
+[Index ""]
+EOF
+}
+
+### 可能会在 mk_default_fen 后面加上代表评论功能的一对花括号 {},
+# 而 _show_default_fen 只有一行 FEN 标签. 主要用于随时保存和导出棋局图
+
+_mk_default_fen () {
+    cat <<EOF
+[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+EOF
+}
+
+_show_default_fen () {
+    cat <<EOF
+[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+EOF
+}
+
+#
+_mksample_pgn_body () {
+    cat <<EOF
+  1. 炮二平五 马８进７
+  2. 马二进三 车９平８
+  3. 车一平二 马２进３
+  4. 马八进九 卒７进１
+  5. 炮八平七 车１平２
+  6. 车九平八 炮２进４
+  7. 车二进四 炮８平９
+  8. 车二平四 车８进１
+  9. 兵九进一 车８平２
+ 10. 车八进一 车２进３
+ 11. 车八平四 车２平４
+ 12. 前车进二 车４进３
+ 13. 炮七进四 士４进５
+ 14. 前车平三 马７退９
+ 15. 车四进三 车４退４
+ 16. 炮五平八 炮２平１
+ 17. 炮八平七 炮９平５
+ 18. 仕四进五 象３进１
+ 19. 车三平一 马９进７
+ 20. 车一平三 马７退９
+ 21. 车四进四 象１进３
+ 22. 车四平一 车４平３
+ 23. 车三进三
+EOF
+}
+
+
+### WXF代码, 辅助操作代码说明
+
+_sample_wxf_00 () {
+    cat<<EOF
+
+ ------------------------
+序号 代码   中文输出           说明
+
+ 1* 15+1 帅五进一 (或将5进1)  1-7代表红方: 帅仕相马车炮兵
+ 2* 26+5 仕六进五 (或士6进5)    (或者黑方: 将士象马车炮卒)
+ 3* 37+5 相七进五 (或象7进5)  第3个字符 + 代表进
+ 4* 48-7 马八退七 (或马8退7)  第3个字符 - 代表退
+ 5* 59+1 车九进一 (或车9进1)
+ 6* 62.5 炮二平五 (或炮2平5)  第3个字符 . 代表平
+ 7* 73+1 兵三进一 (或卒3进1)
+
+ 8* 7+.1 前兵平一 (或前卒平1)  第2个字符 + 代表前; -代表中; .代表后
+ 9* 7-.1 中兵平一 (或中卒平1)  
+10* 7..1 后兵平一 (或后卒平1)  
+
+11* 7a.1 一兵平一 (或一卒平1)  兵/卒的特例: 第2个字符用小写字母abcde
+12* 7b.1 二兵平一 (或二卒平1)    分别代表同一条竖线有4个或5个兵/卒(最前面是一);
+13* 7c.1 三兵平一 (或三卒平1)    或者有两条竖线都有2个或3个兵/卒.
+14* 7d.1 四兵平一 (或四卒平1)    详细的一二三四五定义,见 <<中国象棋-着法表示>>
+15* 7e.1 五兵平一 (或五卒平1)    www.xqbase.com/protocol/cchess_move.htm 
+  abcde定义简介:最右前为一,同一竖线为二(或者二,三),完了再左边的竖线,最前到最后;
+  如果五个兵卒是2+2+1分布,单独的兵/卒属于标准走法(如兵几进几,兵几平几);
+ -------------------------
+
+EOF
+}
+
+_sample_wxf_mini () {
+    cat <<EOF
+* 请输入4位象棋走棋代码 (或者输入 help 查看用法)
+*    例: 15+1 代表帅五进一 (红方), 或者将5进1 (黑方)
+         25-4 代表仕五退四 (红方), 或者士5退4 (黑方)
+         75.4 代表兵五平四 (红方), 或者卒5平4 (黑方)
+         .... 某方让先(或者停走)。显示为连续三个点号
+
+         **** {对局结束}(胜负不确定)。类似的代码还有:
+              **++ {红胜}, **-- {黑胜}, **.. {和棋}   
+
+         //++ [评论模式]
+              进入 [评论模式]。输入的文字会当成评论(用花括号包起来), 写入
+              PGN 对局/棋谱文件。按回车键后, 再按 Ctrl + C 返回 [走棋模式]
+
+         //-- [摆子模式]     直接进入[摆子模式] (而不是[走棋模式])
+EOF
+}
+
+
+_sample_wxf_extra () {
+    cat<<EOF
+ -------------------------
+最后更新: 2017-2-03
+
+注1: 以下属于自定义的操作代码, 用于手动记录棋谱, 并不是WXF定义的标准代码;
+注2: 大多数代码功能暂未实现,仅定义为可扩展的功能。在程序后续版本中,
+     操作代码/功能可能会变更/增补；
+注3：带圆括号的数字序号，表示该功能已实现。
+操作代码版本: $VERSION
+
+序号 代码   中文输出           说明
+
+* "让先(停走)/让子"相关代码
+
+(21) .... ...                某方让先(或者停走)
+(22) 0151 {红无车一} (或:0051 {黑无车1} 
+      含义: 红方/黑方没有1路车(用于以评论形式记录让子信息).
+      如: 红方让1路车和2路马, 依次走 0151 0142 两步即可. 格式说明:
+         第1位: 0代表进入 [让子模式]；  第2位: 1代表红方,0代表黑方;
+         第3位: 棋子代码(2-7);  第4位: 棋子是在1-9哪条竖线上(几路);
+
+* "胜负结果"相关代码
+
+(23) **** *{对局结束}     胜负不确定. 以**开头的代码主要用于快速记录对局胜负.
+(24) **++  1-0 {红胜}    用于在 [Result ""]标签中记录胜负结果. 黑胜/和棋同理.
+(25) **--  0-1 {黑胜}
+(26) **..  1/2-1/2 {和棋}
+
+* 其它"胜负结果"相关功能代码 (用花括号{ }包起来,并保存到 PGN 对局/棋谱文件)
+
+(27) 0000 {红(黑)方认输}   即没必要再走棋了
+ 28  ***. {红(黑)方提和}   需要等对方同意, 才算正式和棋  
+(29) 00.. {双方议和}       同意和棋(对局结束). 
+      快速记忆法: 00代表双方都不想下了, .. 代表和棋
+
+* "规则判定结果"相关代码 (快速记忆法: **开头,后面跟2个数字)
+
+30* **24 {红(黑)方超时判负}   快速记忆法: 一天是24小时.24表示时间相关
+31* **60 {红(黑)方回合数超限判和}  如:双方60回合都未吃子,按棋规,判和
+32* **99 {红(黑)方停止走棋}   如:中途离开,网络掉线,程序意外退出.(久等不来)
+
+* 可以直接判定胜负的简单棋局 (快速记忆法: ..开头表示没必要再继续走棋了
+  ----再继续走下去, 也是浪费时间)
+
+(33) ..00 {例和}          如:双方都没有可进攻的棋子(都没有车马炮兵卒)
+      快速记忆法: 前面..代表应该就是和棋, 后面的00代表没有什么好走的
+
+34* ..-- {红(黑)方例负}  可直接判定胜负的简单棋局,如:对方单马杀孤将
+
+35* ---- {红(黑)方困毙}   轮到某方走棋时,无子可走
+36* 99-- {绝杀}          强制判定走棋方为负(即对方胜利). 如:下一步有子可走,
+    但属于自杀式走法(如将帅直线对面);或者后面的走法是很明显的连续叫将, 无法解救.
+    (快速记忆法:99八十一难, 危机重重)
+
+37* ++-- {红(黑)方长将判负}   快速记忆法: ++代表强行叫将
+38* --.. {红(黑)方长捉/长拦/重复走棋判和} 包括"双方重复走棋三回合, 不变作和
+
+* 保存/导出 PGN 对局/棋谱文件 (快速记忆法:3个999代表与PGN对局/棋谱有关)
+
+39* 9991 {保存PGN对局}  把单个对局保存为PGN对局/棋谱文件, 再新建另一个PGN文件
+40* 9992 {保存PGN连续对局}    用于在同一个PGN对局/棋谱文件中,连续记录多局对战
+
+* 保存/导出 FEN 棋局文件 (快速记忆法:3个+++代表与FEN棋局有关)
+
+41* +++1 {导出FEN棋局}  把当前棋局的棋子排位,导出为单独的FEN棋局数据串文件
+42* +++2 {导出连续FEN棋局}     在同一个FEN棋局文件中,连续记录多个棋局。
+                       可用于动画演示走棋,或者记录一本棋谱的全部棋局图; 
+43* +++9 {保存FEN棋局到PGN}  把当前棋局的棋子排位,以花括号评论的形式,
+                           添加到当前的PGN对局/棋谱文件
+
+44* //// {红(黑)方悔棋}
+
+(45) //++ [评论模式]  进入 [评论模式]. 输入的文字会当成评论(用花括号包起来), 
+        写入 PGN 对局/棋谱文件。按回车键后, 再按 Ctrl + C 返回 [走棋模式]
+
+(46) //-- [摆子模式]  进入[摆子模式]。输入 **** 返回 [走棋模式]。
+  代码示例: 1015 {A0红车}, 2014 {B0红马},
+            1905 {A9黑车}, 2904 {B9黑马},
+            1900 {A9无子} 
+  第1位：横向X坐标（从左到右，1-9，对应 ICCS 横向坐标A-I）；
+  第2位：竖向Y坐标（从下到上，0-9）;
+  第3位：1/0 （1=红方，0=黑方）；
+  第4位：1-7 ，分别对应棋子：（红方）帅仕相马车炮兵，（黑方）将士象马车炮卒；
+  空位代码：第3,4位是00,代表清除这个坐标的棋子；
+           (注意: 棋子的 XY 坐标是以红方位置的左下角为原点，原点坐标为10。
+                见示意图)  19  -->  99
+                          ^        ^
+                          10  -->  19
+
+47* //.. [变着模式]  进入 [变着模式]。按 Ctrl + C 返回 [走棋模式] 
+
+* 辅助操作代码统计(共27个)
+
+**开头 1+3+1+3=8
+0开头  1+1+1=3
+9开头  1+2=3
+++开头 1+3=4
+--开头 1+1=2
+..开头 1+2=3
+//开头 1+3=4
+
+ -------------------------
+
+EOF
+}
+
+
+###
+_option_done () {
+    cat<<EOF
+操作代码版本: $VERSION
+已实现的功能
+ -------------------------
+注1: 以下属于自定义的操作代码, 用于手动记录棋谱, 并不是WXF定义的标准代码;
+注2: 后续版本可能会增加新的操作代码, 或者调整操作代码的功能
+
+序号 代码   中文输出           说明
+
+* "让先(停走)/让子"相关代码
+
+21* .... ...                某方让先(或者停走)
+
+* "胜负结果"相关代码
+
+22* 0151 {红无车一} (或:0051 {黑无车1}  让子代码
+      含义: 红方/黑方没有1路车(用于以评论形式记录让子信息).
+      如: 红方让1路车和2路马, 依次走 0151 0142 两步即可. 格式说明:
+         第1位: 0代表进入 [让子模式]；  第2位: 1代表红方,0代表黑方;
+         第3位: 棋子代码(2-7);  第4位: 棋子是在1-9哪条竖线上(几路);
+
+23* **** * {对局结束}  胜负不确定. 以**开头的代码主要用来手动记录棋谱.
+24* **++  1-0 {红胜}  用于在 [Result ""]标签中备注胜负结果. 黑胜/和棋同理.
+25* **--  0-1 {黑胜}
+26* **..  1/2-1/2 {和棋}
+27* 0000 {红(黑)方认输}   即没必要再走棋了
+
+29* 00.. {双方议和}       同意和棋(对局结束). 
+      快速记忆法: 00代表双方都不想下了, .. 代表和棋
+
+33* ..00 {例和}          如:双方都没有可进攻的棋子(都没有车马炮兵卒)
+      快速记忆法: 前面..代表应该就是和棋, 后面的00代表没有什么好走的
+
+45* //++ [评论模式]  进入 [评论模式]。按 Ctrl + C 返回 [走棋模式] 
+
+-------------------------
+
+EOF
+}
+
+_option_next () {
+cat<<EOF
+ -------------------------
+最后更新：2017-2-03
+
+操作代码版本: $VERSION
+
+* 待处理的问题
+
+200* 目前暂只对各兵种棋子的走法合理性进行初步分析和判定, 未仔细计算棋子坐标位
+     置和周围棋子的障碍环境, 以及是否处于被叫将的状态. 因此走棋的合理性, 还需
+     要用户自己确定走棋的有效性. (如: 兵/卒未过河前, 是不可以左右移动的)
+
+EOF
+}
+
+
+# 显示 [让子模式] 的代码示例
+_option_fen () {
+    cat<<EOF
+  进入 [`echo -e "\e[1;35m摆子模式\e[0m"`]
+      说明: 输入 **** 返回 [走棋模式]
+  代码示例: 1015 {A0红车}, 2014 {B0红马},
+            1905 {A9黑车}, 2904 {B9黑马},
+            1900 {A9无子} 
+  第1位：1-9, 横向X坐标 (从左到右，对应 ICCS 横向坐标A-I);
+  第2位：0-9, 竖向Y坐标 (从下到上);
+  第3位：1,0 (1=红方，0=黑方);
+  第4位：1-7, 分别对应棋子: (红方)帅仕相马车炮兵，(黑方)将士象马车炮卒;
+  空位代码：第3,4位是00,代表清除这个坐标的棋子；
+ -------------------------
+EOF
+}
+
+#,fuzzy
+# 读取走棋输入时的光标定位
+CLINES=`tput lines`
+CCOL="20"
+
+### 
+_option_uuid () {
+### must run as root only!
+#    echo "  * generate UUID for disk, partition, netcard MAC (save to $ETC_DIR/UUID)"
+# [ `whoami` = "root" ] || { echo -e "\n\troot please!"; exit 0; }
+
+
+
+### 每种 UUID 只取第一个, 其它的忽略 (如多块硬盘, 多个分区, 多个网卡)
+## example: disk:        VNC202x2H4X27A    (14位)
+##          partition:   02A43798A4378CE3  (16位)
+    ##          netcard MAC: 000ae4626345      (12位)
+
+    if [ -s "$ETC_DIR/UUID" ]; then
+	echo -e "  !!! WARNG: $ETC_DIR/UUID existed. now force overwrite.\n"
+    fi
+    
+    #: > "$ETC_DIR/UUID"
+    
+    echo "  * 1. frist Disk UUID (cmd: hwinfo --disk)..."
+DISK_UUID=`hwinfo --disk | grep -i "Serial ID:" | head -1 | cut -d'"' -f2`
+    echo "DISK_UUID=$DISK_UUID" | tee "$ETC_DIR/UUID"
+    echo;
+
+
+    echo "  * 2. frist Partition UUID (cmd: hwinfo --partition)..."
+    PARTITION_UUID=`hwinfo --partition | grep -i "uuid/" | head -1 | cut -d',' -f4 | cut -d'/' -f5`
+    echo "PARTITION_UUID=$PARTITION_UUID" | tee -a "$ETC_DIR/UUID";
+    echo
+    
+    
+    echo "  * 3. frist Netcard MAC (cmd: hwinfo --network)..."    
+    NETWORK_MAC=`hwinfo --network | grep -i "HW Address" | sed '/:/s///g' | cut -d' ' -f5`
+    echo "NETWORK_MAC=$NETWORK_MAC" | tee -a "$ETC_DIR/UUID";
+    echo;    
+
+    
+    echo "  Done."
+
+}
+
+### 
+_option_bug () {
+    cat<<EOF
+
+  $APPNAME $VERSION 已知问题:
+2017-1-23 更新：
+
+* bug#001: 输入 //++ 进入 [评论模式]后，按 Ctrl + C 可以返回 [走棋模式]。
+  此时如果在[走棋模式]再按 Ctrl + C, 是无法结束程序的（应该改为输入结束代码
+  **** 来保存 PGN 或退出）。可能是 TAG 2376 后面的 trap 命令代码有缺陷。
+  暂无解决方案。
+
+EOF
+}
+
+###
+_option_thanks () {
+    cat<<EOF
+      鸣谢:
+
+* 中国象棋百科全书网站 ( www.xqbase.com )
+   早在2004年, 该网站就确立并统一了中国象棋软件开发的相关标准和技术细节. 
+因为有了他们的努力, 中国象棋软件才在统一的框架下, 顺利实现技术开发和数据交流!
+
+* Linux 下的中国象棋程序 Gmchess (天书棋谈), 作者 及维护团队
+    因为有了你们, 象棋爱好者们终于在 Linux 下, 找到了一款满意的中国象棋软件!
+
+* 所有关注, 支持以及参与 cchess 开发和维护的朋友
+    因为有了你们, cchess 才能快速成熟, 完善和普及!
+
+   最后, 致所有程序员: 
+
+   若有光芒, 必有远方!
+
+EOF
+}
+
+
+_usage_cn () {
+cat<<EOF
+Usage: $APPNAME [OPTION] 
+
+在命令行输入WXF格式的中国象棋代码, 转换成中国象棋走棋记录, 并保存到PGN对局文件。
+
+Options: 
+      --ok, --done       显示已完成的功能 
+      --next             显示正在编写的功能 (近期可能完成) 
+      --todo             显示规划中的功能   (近期不太可能完成) 
+      -p, --fen          进入[摆子模式]
+      --wxf              显示 WXF 世界象棋联合会走棋代码示例 
+
+      --bug            显示已知问题和缺陷 
+      --thanks         鸣谢 
+      -v, --version    显示版本信息并退出 
+      -h, --help       显示帮助信息并退出 
+
+Bugs: 
+请发送缺陷报告给 Careone <emacslocale@126.com>. 
+
+Homepage: 
+* 1. 主程序 cchess 定期更新(开发版, 非稳定版本)  
+https://github.com/kuiba1949/cchess/ 
+
+* (DEB 软件包下载) 
+https://sourceforge.net/projects/emacslocale/files/cchess/ 
+EOF
+}    
+
+### 读取语言环境 CLANG ,决定是显示为简体还是繁体中文来显示走棋记录
+#  TODO: 以后还可以考虑增加一个英文输出方案,方便外国友人下中国象棋.
+#  如: P5+1 p3+1 (含义: 兵五进一 卒3进1)
+
+# 技巧: 强制使用繁体中文或英文环境运行程序, 以测试繁体中文/英文走法的文字输出
+    # LANG=zh_TW cchess
+    # LANG=en cchess  
+    
+  case "$CLANG" in
+
+
+      zh_CN) # 简体中文
+      R1="帅"
+R2="仕"
+R3="相"
+R4="马"
+R5="车"
+R6="炮"
+R7="兵"
+
+B1="将"
+B2="士"
+B3="象"
+B4="$R4"
+B5="$R5"
+B6="$R6"
+B7="卒"
+
+#
+RED="红"
+BLACK="黑"
+
+MISS='无'
+NONE='无子'
+
+#
+R_ONE="一" 
+R_TWO="二" 
+R_THREE="三" 
+R_FOUR="四" 
+R_FIVE="五" 
+R_SIX="六" 
+R_SEVEN="七" 
+R_EIGHT="八" 
+R_NINE="九"
+
+#
+B_ONE="１" 
+B_TWO="２" 
+B_THREE="３" 
+B_FOUR="４" 
+B_FIVE="５" 
+B_SIX="６" 
+B_SEVEN="７" 
+B_EIGHT="８" 
+B_NINE="９"
+
+# TODO 691: 保留的变量, 后期版本中, 再完成输出代码的优化, 统一使用变量
+FORWARDS="进"
+BACKWARDS="退"
+SIDEWARDS="平"
+
+## TAG 1099:  
+FRONT="前"
+MIDDLE="中"
+BEHIND="后"
+
+# WIN="胜"
+# LOSS="输"
+# DRAW="和"
+
+;;
+      zh_TW | zh_HK | zh_SG)# 繁体中文
+R1="帥"
+R2="仕"
+R3="相"
+R4="馬"
+R5="車"
+R6="炮"
+R7="兵"
+
+B1="將"
+B2="士"
+B3="象"
+B4="$R4"
+B5="$R5"
+B6="砲"
+B7="卒"
+
+#
+FORWARDS="進"
+BACKWARDS="退"
+SIDEWARDS="平"
+
+#
+FRONT="前"
+MIDDLE="中"
+BEHIND="后"
+
+#
+RED="红"
+BLACK="黑"
+
+MISS="无"
+NONE='无子'
+#
+#
+R_ONE="一" 
+R_TWO="二" 
+R_THREE="三" 
+R_FOUR="四" 
+R_FIVE="五" 
+R_SIX="六" 
+R_SEVEN="七" 
+R_EIGHT="八" 
+R_NINE="九"
+
+#
+B_ONE="１" 
+B_TWO="２" 
+B_THREE="３" 
+B_FOUR="４" 
+B_FIVE="５" 
+B_SIX="６" 
+B_SEVEN="７" 
+B_EIGHT="８" 
+B_NINE="９"
+
+;;
+      
+      *) # 待开发的功能, 仅适用于外国用户显示为棋子为单个大写/小写字母代码
+	  ## 大写字母代表红方,小写代表黑方.当前使用英文字母方案
+      R1="K"
+R2="A"
+R3="B"
+R4="N"
+R5="R"
+R6="C"
+R7="P"
+
+B1="k"
+B2="a"
+B3="b"
+B4="n"
+B5="r"
+B6="c"
+B7="p"
+
+FORWARDS="+"
+BACKWARDS="-"
+SIDEWARDS="."
+
+RED="R"    #"红"
+BLACK="B"   #"黑"
+
+MISS="/"    #"让"
+NONE='__'   #'无子'
+;;
+  
+  esac
+
+## TAG 1018:
+
+## 以单个英文大/小写字母代码，或者单个中文汉字来显示布子图
+
+## Text for rowt, rowb (Top/Bottom)
+  # var: ROW_TT ROW_TB
+
+  _show_fen_pos () {
+
+	## X0 代表开始显示棋子布局图的起始光标的X坐标（从左到右）。
+	## Y0 代表开始显示棋子布局图的起始光标的Y坐标（从上到下）。
+	#   因为以中文显示棋子，X横向方向共需要30个字符位（含左右边框）,
+	#   Y轴竖向需要14行（包含：10行棋子；上下边线各1行；
+	#   1-9/一到九路线标示各1行；
+	#
+	    # 注： * 图形界面的 zh_* 简体/繁体中文环境，棋子为汉字，
+	    #       且红黑双色用不同的颜色区分；
+	    #     * tty1-tty6: 红/黑双方棋子分别用大/小写字母表示（分成两种颜色）；
+	    #     * 注：tty1-tty6 的 fbterm 下， tput 命令无法实现彩色显示文字；
+	    #       需要改用 echo -e '\e[1;32m' 之类的命令来实现文字的彩色显示；
+
+    BORDER="|"
+    declare -i Y0=0
+#    let "X0 = `tput cols` - 34"
+
+
+	## ------
+	case "$CLANG" in
+	    zh_CN | zh_TW | zh*)
+		let "X0 = `tput cols` - 34"		
+		### 简体/繁体中文，棋盘占位：15行(10+5), 32列(3*9+5)
+		##  如果是英文： 15行，23列(2*9+5)
+		# 标准开局中, row_t8=row_t5=row_t4=row_t1=空行无子
+		# 注：ROW_HR, ROW_TT, ROW_TB ROW_XX 字符串后面，至少
+		#    应加3个空格，以防止终端/控制台下屏幕上移一行后，原来的
+		#    字符未清除干净，在相应的行尾造成不相干的文字残留。
+		P1=". "
+
+		### 棋盘上下框线
+		ROW_HR="  ==========================   "
+		
+		### row_t of Top, 因为一个中文汉字占用两个字符位置，
+		#   所以数字之间要有2个空格
+		ROW_TT="  1  2  3  4  5  6  7  8  9   "
+
+		### row_t of Bottom
+		ROW_TB="  九 八 七 六 五 四 三 二 一   "
+
+		### row with ICCS X
+		ROW_XX="  A  B  C  D  E  F  G  H  I   "
+	    	    ;;
+
+	    *) # for English
+		#let "X0 = `tput cols` - 25"
+		let "X0 = `tput cols` - 34"		
+		P1='.'
+		ROW_HR="  =================   " 
+		### row_t of Top
+		ROW_TT="  1 2 3 4 5 6 7 8 9   "
+
+		### row_t of Bottom
+		ROW_TB="  N E s S f F t T O   "
+
+		### row with ICCS X
+		ROW_XX="  A B C D E F G H I   "
+		;;
+	esac
+
+	
+## 显示棋盘顶部的线路标记（1-9）和棋盘框线
+	tput cup "$Y0" "$X0" ; #tput ed;
+ 	echo "   ${ROW_TT}  "
+	
+	let "Y0 += 1";
+	tput cup "$Y0" "$X0"; #tput ed;
+	echo "   $ROW_HR  "
+
+## 黑一楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 9 $BORDER "
+  for a in "${row9[@]}"; do
+    case "$a" in
+	#  无子棋位，用绿色(32m)表示是黑方地界
+	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+	b | e)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
+	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
+	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	## 红方的进攻棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+##  黑卒，红仕/红相/红将：
+#   都不可能出现在这条横线（除非翻转棋盘），忽略。
+
+	*)ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+# 黑二楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 8 $BORDER "
+  for a in "${row8[@]}"; do
+    case "$a" in
+	#  无子棋位，用绿色(32m)表示是黑方地界
+	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+#	b)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
+	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
+	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	## 红方的进攻棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+##  黑卒，红仕/红相/红将：
+#   都不可能出现在这条横线（除非翻转棋盘），忽略。
+
+	#*)ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+	*): ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+# 黑三楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 7 $BORDER "
+  for a in "${row7[@]}"; do
+    case "$a" in
+	#  无子棋位，用绿色(32m)表示是黑方地界
+	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+	b | e)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
+	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
+	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	## 红方的进攻棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+##  黑卒，红仕/红相/红将：
+#   都不可能出现在这条横线（除非翻转棋盘），忽略。
+
+	
+	*)ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+# 黑四楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 6 $BORDER "
+  for a in "${row6[@]}"; do
+    case "$a" in
+	#  无子棋位，用绿色(32m)表示是黑方地界
+	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+#	b)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
+#	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
+#	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	## 红方的进攻棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+##  红仕/红相/红将：
+#   都不可能出现在这条横线（除非翻转棋盘），忽略。
+
+	*)ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+
+# 黑五楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 5 $BORDER "
+  for a in "${row5[@]}"; do
+    case "$a" in
+	#  无子棋位，用绿色(32m)表示是黑方地界
+	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+	b)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
+#	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
+#	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	## 红方的进攻棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+##  红仕/红相/红将：
+#   都不可能出现在这条横线（除非翻转棋盘），忽略。
+
+	*)ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+	# TAG 1232:
+# 红五楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 4 $BORDER "
+  for a in "${row4[@]}"; do
+    case "$a" in
+	#  无子棋位，用红色(31m)表示是红方地界
+	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	## 红方棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
+#	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
+#	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+# 红四楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 3 $BORDER "
+  for a in "${row3[@]}"; do
+    case "$a" in
+	#  无子棋位，用红色(31m)表示是红方地界
+	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	## 红方棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	
+#	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
+#	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
+#	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+# 红三楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 2 $BORDER "
+  for a in "${row2[@]}"; do
+    case "$a" in
+	#  无子棋位，用红色(31m)表示是红方地界
+	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	## 红方棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
+	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
+	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+#	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+
+
+# 红二楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 1 $BORDER "
+  for a in "${row1[@]}"; do
+    case "$a" in
+	#  无子棋位，用红色(31m)表示是红方地界
+	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	## 红方棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+#	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
+	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
+	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+#	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+    esac	
+  done
+	echo -n "$BORDER"
+
+
+## 红一楼
+	let "Y0 += 1"; tput cup "$Y0" "$X0"; #tput ed;
+	echo -n " 0 $BORDER "
+  for a in "${row0[@]}"; do
+    case "$a" in
+	#  无子棋位，用红色(31m)表示是红方地界
+	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	## 红方棋子，用红色(31m)表示
+	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
+	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
+	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+#	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	# 黑方棋子，用绿色(32m)表示是黑方
+	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	#
+	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
+    esac	
+  done
+  echo -n "$BORDER"
+  
+## 显示棋盘底部的线路标记（九到一）和棋盘框线
+	let "Y0 += 1"; tput cup "$Y0" "$X0"
+    echo "   $ROW_HR"
+
+	let "Y0 += 1"; tput cup "$Y0" "$X0"
+    echo "   ${ROW_TB}"		
+
+	let "Y0 += 1"; tput cup "$Y0" "$X0"
+    echo "   ${ROW_XX}"	
+
+
+    ## TAG 1400: 附加显示（主要用于 [摆子模式] 的棋子计数）
+
+    
+    if [ "$SHOW_COUNT" = 1 ]; then
+	let "Y0 += 1"; tput cup "$Y0" "$X0"	
+echo "[$RED] $R1${#xy_r1[*]} $R2${#xy_r2[*]} $R3${#xy_r3[*]}  $R4${#xy_r4[*]} $R5${#xy_r5[*]} $R6${#xy_r6[*]} $R7${#xy_r7[*]} "
+	let "Y0 += 1"; tput cup "$Y0" "$X0"	
+echo "[$BLACK] $B1${#xy_b1[*]} $B2${#xy_b2[*]} $B3${#xy_b3[*]}  $B4${#xy_b4[*]} $B5${#xy_b5[*]} $B6${#xy_b6[*]} $B7${#xy_b7[*]} "   
+fi  
+    # ===================
+    
+    }
+
+### HEAD END ###
+
+
+### BODY ###
+
+###---------------
+for option in "$@"; do
+
+    	case "$option" in
+    	 -h | --help)
+	 _usage_cn #暂只提供简体中文帮助信息
+	exit 0 ;;
+
+	# 
+	-p | --fen)
+	  echo "  * [摆子模式]"
+	  exit 0 ;;
+
+	-dp | --dp | --default-pos)
+	     # 2017-2-02
+	     echo "option REMOVED!"
+	     exit 0;
+
+	    # _show_default_pos
+	  ;;
+
+	#
+	--wxf | -wxf)
+	  _sample_wxf_00
+	  exit 0 ;;
+
+	--ok | -ok | --done | -done)
+	  _option_done
+	  exit 0 ;;
+
+	--next | -next)
+	  _option_next
+	  exit 0 ;;
+
+	--todo | -todo)
+	  _sample_wxf_extra
+	  exit 0 ;;
+
+	--thanks | -thanks)
+	  _option_thanks
+	  exit 0 ;;
+
+	--bug | -bug)
+	  _option_bug
+	  exit 0 ;;
+
+	--uuid | -uuid)
+	    ### must run as root only!
+	    echo    "  * read UUID/MAC (first disk/partition/netcard MAC only), " 
+	    echo -e "    and save to: $ETC_DIR/UUID\n"
+	    [ `whoami` = "root" ] || { echo -e "\n\troot please!"; exit 0; }	    
+
+	    if [ ! -d "$ETC_DIR" ]; then
+		mkdir -p "$ETC_DIR"
+	    fi
+	    
+	    _option_uuid
+	    
+	    exit 0 ;;
+
+    	-v | --version)
+	  basename -- "$APPNAME $VERSION"
+	  exit 0 ;;
+
+    	-*)
+	  echo "Unrecognized option \`$option'" 1>&2
+	  exit 1 ;;
+    esac
+
+done
+
+
+###---------------
+
+
+
+
+
+### check and auto mkdir app configure dir
+if [ ! -d "$CFG_DIR/" ]; then
+  mkdir -p "$CFG_DIR/";
+fi
+
+### save/export PGN/FEN files to dir:
+if [ ! -d "$PGN_DIR/" ]; then
+  mkdir -p "$PGN_DIR/";
+fi
+
+if [ ! -d "$FEN_DIR/" ]; then
+  mkdir -p "$FEN_DIR/";
+fi
+
+
+### TODO 540: 配置文件 cchess.cfg 暂未正式启用. 功能待开发
+# 创建默认配置文件
+
+
+
+if [ "$ENABLE_CFG" = 1 ]; then
+    
+    ###
+    if [ ! -e "$CFG_FILE" ]; then
+    :
+    #  _init_cfg > "$CFG_FILE";
+    fi
+
+fi
+### --------------------
+
+### T774: 
+### 读取配置文件和参数文件, 得到 PGN 和 FEN 的数字序号 PGN_NUM, FEN_NUM,
+##  用于连续编号
+
+## 如果存在 PGN_INDEX 参数文件, 则从文件读取数字作为 PGN_NUM 的参数 
+if [ -r "$PGN_INDEX" ] && [ -s "$PGN_INDEX" ] ; then
+    
+    # PGN_NUM=`grep [0-9] "$PGN_INDEX" | head -1 | tr -s ' ' | sed '/ /s///' | cut -d' ' -f1`    
+    PGN_NUM=`cat "$PGN_INDEX" | cut -f1`
+
+    ### DEBUG
+#echo "  L787: PGN_NUM=$PGN_NUM"
+    
+    ## 如果读取到的序号不是数字,强制更正为1, 并把更正后的数值写入
+    #  pgn_index 参数文件
+    #  注: 如果是0开头, 如 0001 ,结果待确认
+    case "$PGN_NUM" in
+	#[0-9][0-9][0-9][0-9] | [0-9][0-9][0-9] | [0-9][0-9] | [0-9]):
+	*[^0-9]*)  PGN_NUM=1;
+		    echo -n "$PGN_NUM" > "$PGN_INDEX";
+			     ;;
+
+	
+	*):
+	  #PGN_NUM=1;
+	#	  echo "$PGN_NUM" > "$PGN_INDEX"; 
+	;;
+    esac
+    
+else ## 如果不存在这个文件, 新建一个, 默认序号从1开始. 
+    ## T801: 
+    PGN_NUM=1;
+    echo -n "$PGN_NUM" > "$PGN_INDEX";
+    
+fi
+
+## T791:
+#DEBUG=1
+    if [  "$DEBUG" = 1 ]; then
+        echo "  L772: PGN_NUM=$PGN_NUM"
+	#sleep 10;
+    fi
+    
+## invoke cmd: convert_pgn
+# convert other File format to [PGN-File]
+# usage: convert_pgn 001.xqf 001.pgn
+#It support [.ccm|.che|.chn|.mxq|.xqf]
+
+CONVERT_PGN="convert_pgn"
+
+#
+  if [ "$KEEP_LOG" = 1 ]; then
+    echo -e "\n`date`" >> "$LOG"
+  fi
+
+
+  ### READY TO GO! ###
+### T812:
+  
+
+
+
+### 显示日期和时间标签, 用作提示, 以及方便手动复制到 PGN 文件头；
+  if [ "$SHOW_DATETIME" = 1 ]; then
+      echo -en "[Date \"`date +%Y.%m.%d`\"]  "
+      echo -e  "[Time \"`date +%H:%M:%S`\"]"
+  fi
+
+  if [ "$SHOW_DEFAULT_FEN" = 1 ]; then  
+      _show_default_fen
+  fi
+  
+
+echo  " ------------------------- "
+
+
+  if [ "$SHOW_HOWTO" = 1 ]; then 
+      _sample_wxf_mini
+
+      #_sample_wxf_00
+      #_sample_wxf_extra
+     # echo
+      echo  " ------------------------- "
+  fi
+  
+## 创建一个标准 PGN 文件头(标签组), 保存到临时文件 (对局结束后,可能需要修改
+#  胜负结果,以及其它标签,最后再合并到正式 PGN 文件)
+#  程序会把当前日期,自动写入 [Date ""] 标签
+#    (问题: 如果是录入昨天或者以前的对局,可能还需要手动修改 Date 标签)；
+
+    PGN_HEAD=`mktemp`
+    _mk_pgn_head > "$PGN_HEAD"
+    
+    ## 在 PGN 默认标签后面添加自定义标签, 写入 PGN_HEAD 文件头临时文件
+    _mk_pgn_custom >> "$PGN_HEAD"
+
+
+### TAG 1632:     
+  
+## T813: 
+PGN_BODY=`mktemp`
+
+while true; do
+
+    ## T814:
+    #tput cup "$CLINES" "$CCOL"
+    tput sc
+
+
+    
+read -n 4 STRING
+
+case "$STRING" in
+
+    ### 情况１：让步(让先, 停走),
+    # 
+    \.\.\.\.)
+	## T821:
+
+	#
+	
+  if [ "$DEBUG" = 1 ]; then
+    echo
+      echo -e "\tL81: STEP=$STEP, LOOP=$LOOP; TRUN=$TRUN"
+  fi
+  
+  tput rc; tput ed;
+
+  if [ "$PAUSED" != 1 ]; then
+
+
+
+  ### T838: ----
+  if [ "$TRUN" = 1 ]; then
+      ## TODO 689: 暂不支持输出纯英文格式的 让先代码(... ), 功能待补充
+      #echo -en "$LOOP. ...   " | tee -a "$PGN_BODY";　# English
+      #
+      #中文全角格式: 3个点号和1个空格, 共4个字符
+      echo -en "$LOOP. ．．．　  " | tee -a "$PGN_BODY"; 
+      
+    TRUN=0
+ elif  [ "$TRUN" = '' ]; then
+      ## 如果 TRUN=空（即是第一步），先换行再输出让子文字，以免和前面 “让子”
+      ## 相关的附加评论(如 {红无车一})连在同一行，影响排版效果。
+      
+      echo -en "\n$LOOP. ．．．　  " | tee -a "$PGN_BODY"; 
+      
+      TRUN=0
+      
+    #  else echo -e "..." | tee -a "$PGN_BODY"; # English
+  else echo -e "．．．　" | tee -a "$PGN_BODY"; # 4个中文全角字符
+       
+       let "LOOP += 1";
+       TRUN=1;
+  fi
+  ### ====
+  
+  tput sc
+  #tput cup "$CLINES" "$CCOL"
+
+
+  ## PAUSED=1: 已经走了一步让子棋. 下一步对方就不能再停走----没有这么下棋的
+  PAUSED=1
+  
+  let "STEP += 1";
+  
+  	## SHOW_COUNT=1: 只在 [摆子模式] 下，才在棋盘下方显示各棋子计数;
+	#  其它情况下（让子模式，让先/停走，正常走棋），都不显示棋子计数 
+	if [ "$SHOW_COUNT" = 1 ]; then
+	    unset SHOW_COUNT
+	fi
+	
+  continue;
+  
+    else   tput rc; tput ed; continue;
+
+  fi
+  ;;
+
+
+     ### 情况２：
+     ### T836: 走棋模式相关操作代码
+
+    [1-7][1-9\+\.\-abcdeABCDE][\+\-\.][1-9])
+
+  # S1-S4: 截取的第1到4个字符
+  # ST1-ST4: 转换后的中文走棋文字，如：帅五平四，将5平4．
+  #     当黑方的S2/S4是数字1-9时， ST2=S2, ST4=S4
+  # ST8: 转换后中文走法的前2个字，主要是针对多子同线的情况．
+  #  如：正常走法：车一, 车9
+  #     特殊走法(多子同线)：前/中/后兵，一/二/三/四/五兵
+  	
+    S1=`echo "$STRING" | cut -c 1`
+    S2=`echo "$STRING" | cut -c 2`
+    S3=`echo "$STRING" | cut -c 3`
+    S4=`echo "$STRING" | cut -c 4`
+    
+if [ "$DEBUG" = 1 ]; then
+  echo -e '\t'
+  #echo "L155: TRUN=$TRUN; ${S1}${S2}${S3}${S4}"
+  #  sleep 1
+fi
+
+    ### 走棋代码第1位
+    # 说明: tr 命令对中文全角文字和符号无法正确处理, 需要改用 sed,
+    # 或者 case 语句
+
+    case "$TRUN" in
+	'' | 1) #红方棋子名称转换(数字1-7转成中文棋子).
+	    # 如果是针对外国用户,可能是数字转为单个大写或小写字母
+# ST1: /1/帅/g;s/2/仕/g;s/3/相/g;s/4/马/g;s/5/车/g;s/6/炮/g;s/7/兵/
+
+      ## ------------
+      case "$S1" in
+
+	1)if [ -n "$R1" ]; then ST1="$R1"; else ST1="$S1"; fi; ;;
+	2)if [ -n "$R2" ]; then ST1="$R2"; else ST1="$S1"; fi; ;;
+	3)if [ -n "$R3" ]; then ST1="$R3"; else ST1="$S1"; fi; ;;
+	4)if [ -n "$R4" ]; then ST1="$R4"; else ST1="$S1"; fi; ;;
+	5)if [ -n "$R5" ]; then ST1="$R5"; else ST1="$S1"; fi; ;;
+	6)if [ -n "$R6" ]; then ST1="$R6"; else ST1="$S1"; fi; ;;
+	7)if [ -n "$R7" ]; then ST1="$R7"; else ST1="$S1"; fi; ;;
+	
+	*)tput rc; tput ed;
+	  continue ;;	
+
+      esac
+      # ============
+
+    ;;
+	
+	0) # 黑方
+# ST1: /1/将/g;s/2/士/g;s/3/象/g;s/4/马/g;s/5/车/g;s/6/炮/g;s/7/卒/
+
+	## ======
+
+     ## ------------
+      case "$S1" in
+	1)if [ -n "$B1" ]; then ST1="$B1"; else ST1="$S1"; fi; ;;
+	2)if [ -n "$B2" ]; then ST1="$B2"; else ST1="$S1"; fi; ;;
+	3)if [ -n "$B3" ]; then ST1="$B3"; else ST1="$S1"; fi; ;;
+	4)if [ -n "$B4" ]; then ST1="$B4"; else ST1="$S1"; fi; ;;
+	5)if [ -n "$B5" ]; then ST1="$B5"; else ST1="$S1"; fi; ;;
+	6)if [ -n "$B6" ]; then ST1="$B6"; else ST1="$S1"; fi; ;;
+	7)if [ -n "$B7" ]; then ST1="$B7"; else ST1="$S1"; fi; ;;
+	
+	*)tput rc; tput ed;
+	  continue ;;
+      esac
+      # ============      
+      ;;
+	
+	
+	*) # ST1="$S1";
+	  tput rc; tput ed;
+	  continue;
+    ;;    
+    esac
+
+    
+    ### 走棋代码第2位
+
+    case "$S2" in
+	[1-9])
+	    if [ "$TRUN" = 1 ] || [ "$TRUN" = '' ] ; then
+	
+     	## ------------
+        case "$S2" in
+	1)if [ -n "$R_ONE" ]; then ST2="$R_ONE"; else ST2="$S2"; fi; ;;
+	2)if [ -n "$R_TWO" ]; then ST2="$R_TWO"; else ST2="$S2"; fi; ;;
+	3)if [ -n "$R_THREE" ]; then ST2="$R_THREE"; else ST2="$S2"; fi; ;;
+	4)if [ -n "$R_FOUR" ]; then ST2="$R_FOUR"; else ST2="$S2"; fi; ;;
+	5)if [ -n "$R_FIVE" ]; then ST2="$R_FIVE"; else ST2="$S2"; fi; ;;
+	6)if [ -n "$R_SIX" ]; then ST2="$R_SIX"; else ST2="$S2"; fi; ;;
+	7)if [ -n "$R_SEVEN" ]; then ST2="$R_SEVEN"; else ST2="$S2"; fi; ;;
+	8)if [ -n "$R_EIGHT" ]; then ST2="$R_EIGHT"; else ST2="$S2"; fi; ;;
+	9)if [ -n "$R_NINE" ]; then ST2="$R_NINE"; else ST2="$S2"; fi; ;;
+
+	*) # 其它无效的竖线代码，自动清除，等待重新输入
+	tput rc; tput ed; continue;
+	    ;;
+	esac
+      	# ============
+
+	elif [ "$TRUN" = 0 ]; then
+	#黑方走法
+     	## ------------
+        case "$S2" in
+	1)if [ -n "$B_ONE" ]; then ST2="$B_ONE"; else ST2="$S2"; fi; ;;
+	2)if [ -n "$B_TWO" ]; then ST2="$B_TWO"; else ST2="$S2"; fi; ;;
+	3)if [ -n "$B_THREE" ]; then ST2="$B_THREE"; else ST2="$S2"; fi; ;;
+	4)if [ -n "$B_FOUR" ]; then ST2="$B_FOUR"; else ST2="$S2"; fi; ;;
+	5)if [ -n "$B_FIVE" ]; then ST2="$B_FIVE"; else ST2="$S2"; fi; ;;
+	6)if [ -n "$B_SIX" ]; then ST2="$B_SIX"; else ST2="$S2"; fi; ;;
+	7)if [ -n "$B_SEVEN" ]; then ST2="$B_SEVEN"; else ST2="$S2"; fi; ;;
+	8)if [ -n "$B_EIGHT" ]; then ST2="$B_EIGHT"; else ST2="$S2"; fi; ;;
+	9)if [ -n "$B_NINE" ]; then ST2="$B_NINE"; else ST2="$S2"; fi; ;;
+
+	*) # 其它无效的竖线代码，自动清除，等待重新输入
+	tput rc; tput ed; continue;
+	    ;;
+	esac
+      	# ============
+	
+ 	    else : 
+		# TRUN 为空，即还没开始走棋。此时可以进行让子或摆子
+
+	    fi
+	    
+	    ST8="${ST1}${ST2}"; #标准走法
+	    ;;
+	
+	[aAbBcCdDeE\+\.\-])
+	    ## 
+#ST2=/+/前/g;s/\./后/g;s/-/中/g;s/[aA]/一/g;s/[bB]/二/g;s/[cC]/三/g;s/[dD]/四/g;s/[eE]/五/
+
+	## ------------
+        case "$S2" in
+	[aA])if [ -n "$R_ONE" ]; then ST2="$R_ONE"; else ST2="$S2"; fi; ;;
+	[bB])if [ -n "$R_TWO" ]; then ST2="$R_TWO"; else ST2="$S2"; fi; ;;
+	[cC])if [ -n "$R_THREE" ]; then ST2="$R_THREE"; else ST2="$S2"; fi; ;;
+	[dD])if [ -n "$R_FOUR" ]; then ST2="$R_FOUR"; else ST2="$S2"; fi; ;;
+	[eE])if [ -n "$R_FIVE" ]; then ST2="$R_FIVE"; else ST2="$S2"; fi; ;;
+
+	\+)if [ -n "$FRONT" ]; then ST2="$FRONT"; else ST2="$S2"; fi; ;;
+	\-)if [ -n "$MIDDLE" ]; then ST2="$MIDDLE"; else ST2="$S2"; fi; ;;
+	\.)if [ -n "$BEHIND" ]; then ST2="$BEHIND"; else ST2="$S2"; fi; ;;
+
+	*) # 其它无效的 “前中后/一二三四五” 位置代码，自动清除，等待重新输入
+	tput rc; tput ed; continue;
+	    ;;
+	esac
+      	# ============
+
+	    
+	    ST8="${ST2}${ST1}";
+	    ## 特殊走法，如: 前/中/后兵平一；一/二/三/四/五/兵平四
+	    # +/-/. = 前/中/后
+	    # a/b/c/d/e = 一/二/三/四/五
+	    ;;
+
+
+	
+	*)ST2="$S2";
+	  ST8="${ST1}${ST2}"; #标准走法
+	    ;; 
+    esac
+
+    
+    ### 走棋代码第3位
+
+    case "$S3" in
+	## 如果 FORWARDS (前), BACKWARDS(退), SIDEWARDS(平)
+	## 没有定义对应的文字或字符, 则使用默认的 +-. 代码代替
+	   \+)if [[ -n "$FORWARDS" ]]; then ST3="$FORWARDS";
+	     else ST3="$S3";
+	     fi  ;;
+	   \-)if [[ -n "$BACKWARDS" ]]; then ST3="$BACKWARDS";
+	     else ST3="$S3";
+	     fi  ;;
+	   
+	   \.)if [[ -n "$SIDEWARDS" ]]; then ST3="$SIDEWARDS";
+	     else ST3="$S3";
+	     fi  ;;
+
+	   *) # ST3="$S3";
+	       tput rc; tput ed; continue;
+	     ;;
+	esac
+
+
+    ### 走棋代码第4位
+        case "$S4" in
+	[1-9])
+	    if [ "$TRUN" = 1 ] || [ "$TRUN" = '' ]; then #红方走法
+     	## ------------
+        case "$S4" in
+	1)if [ -n "$R_ONE" ]; then ST4="$R_ONE"; else ST4="$S4"; fi; ;;
+	2)if [ -n "$R_TWO" ]; then ST4="$R_TWO"; else ST4="$S4"; fi; ;;
+	3)if [ -n "$R_THREE" ]; then ST4="$R_THREE"; else ST4="$S4"; fi; ;;
+	4)if [ -n "$R_FOUR" ]; then ST4="$R_FOUR"; else ST4="$S4"; fi; ;;
+	5)if [ -n "$R_FIVE" ]; then ST4="$R_FIVE"; else ST4="$S4"; fi; ;;
+	6)if [ -n "$R_SIX" ]; then ST4="$R_SIX"; else ST4="$S4"; fi; ;;
+	7)if [ -n "$R_SEVEN" ]; then ST4="$R_SEVEN"; else ST4="$S4"; fi; ;;
+	8)if [ -n "$R_EIGHT" ]; then ST4="$R_EIGHT"; else ST4="$S4"; fi; ;;
+	9)if [ -n "$R_NINE" ]; then ST4="$R_NINE"; else ST4="$S4"; fi; ;;
+
+	*) # 其它无效的竖线代码，自动清除，等待重新输入
+	tput rc; tput ed; continue;
+	    ;;
+	esac
+      	# ============
+	
+	    elif [ "$TRUN" = 0 ]; then #黑方走法
+		
+     	## ------------
+        case "$S4" in
+
+	1)if [ -n "$B_ONE" ]; then ST4="$B_ONE"; else ST4="$S4"; fi; ;;
+	2)if [ -n "$B_TWO" ]; then ST4="$B_TWO"; else ST4="$S4"; fi; ;;
+	3)if [ -n "$B_THREE" ]; then ST4="$B_THREE"; else ST4="$S4"; fi; ;;
+	4)if [ -n "$B_FOUR" ]; then ST4="$B_FOUR"; else ST4="$S4"; fi; ;;
+	5)if [ -n "$B_FIVE" ]; then ST4="$B_FIVE"; else ST4="$S4"; fi; ;;
+	6)if [ -n "$B_SIX" ]; then ST4="$B_SIX"; else ST4="$S4"; fi; ;;
+	7)if [ -n "$B_SEVEN" ]; then ST4="$B_SEVEN"; else ST4="$S4"; fi; ;;
+	8)if [ -n "$B_EIGHT" ]; then ST4="$B_EIGHT"; else ST4="$S4"; fi; ;;
+	9)if [ -n "$B_NINE" ]; then ST4="$B_NINE"; else ST4="$S4"; fi; ;;
+
+	*) # 其它无效的竖线代码，自动清除，等待重新输入
+	tput rc; tput ed; continue;
+	    ;;
+	esac	
+      	# ============
+	
+	    else : # 如果 TRUN 不是1或0,也不是开局第一步的状态（值为空）。
+		 # 这种情况除非数据出错，或者有电磁干扰。
+		#tput rc; tput ed; continue;
+	    fi
+
+	    ;;
+	
+	*) ## 其它无法识别的竖线代码
+	    tput rc; tput ed; continue;
+	  #ST4="$S4" ;
+	;;
+	esac
+
+	### 判断走棋是否合法
+	case "$S1" in
+	    1) #帅／将
+		case "$S2" in
+		    4 | 6)
+			if [ "$S4" = '1' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '-' ]; then : ;
+		      elif [ "$S4" = '5' ] && [ "$S3" = '.' ]; then : ;
+		      else
+			  tput rc; tput ed; continue;
+			  :
+		      fi
+		      
+			  ;;
+		    
+		    5)
+			if [ "$S4" = '4' ] && [ "$S3" = '.' ]; then : ;
+		      elif [ "$S4" = '6' ] && [ "$S3" = '.' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '-' ]; then : ;
+			else tput rc; tput ed; continue;
+			fi
+			
+			  ;;
+		    
+		    *) 
+			tput rc; tput ed; continue;
+		      ;;
+		    esac
+		   ;;
+	    2): #仕／士
+	      case "$S2" in
+	      	  4 | 6)
+			if [ "$S4" = '5' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '5' ] && [ "$S3" = '-' ]; then : ;
+		      else tput rc; tput ed; continue;
+		      fi
+		        ;;
+		    
+		    5)
+			if [ "$S4" = '4' ] && [ "$S3" = '+' ]; then : ;
+			elif [ "$S4" = '4' ] && [ "$S3" = '-' ]; then : ;
+			elif [ "$S4" = '6' ] && [ "$S3" = '+' ]; then : ;
+			elif [ "$S4" = '6' ] && [ "$S3" = '-' ]; then : ;
+			else tput rc; tput ed; continue;
+			fi
+			  ;;
+		    *) 
+			tput rc; tput ed; continue;
+		      ;;
+		   esac
+				  
+	    ;;
+	    3): #相／象
+	      case "$S2" in
+	      	   3)
+			if [ "$S4" = '5' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '5' ] && [ "$S3" = '-' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '1' ] && [ "$S3" = '-' ]; then : ;
+		      else tput rc; tput ed; continue;
+		      fi
+		        ;;
+		    
+		    7)
+			if [ "$S4" = '5' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '5' ] && [ "$S3" = '-' ]; then : ;
+		      elif [ "$S4" = '9' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '9' ] && [ "$S3" = '-' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+	      	    5)
+			if [ "$S4" = '3' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '3' ] && [ "$S3" = '-' ]; then : ;
+		      elif [ "$S4" = '7' ] && [ "$S3" = '+' ]; then : ;
+		      elif [ "$S4" = '7' ] && [ "$S3" = '-' ]; then : ;
+		      else tput rc; tput ed; continue;
+		      fi
+		        ;;
+		    
+		    1)
+			if [ "$S4" = '3' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '3' ] && [ "$S3" = '-' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+		    9)
+			if [ "$S4" = '7' ] && [ "$S3" = '+' ]; then : ;
+	    	      elif [ "$S4" = '7' ] && [ "$S3" = '-' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			  ;;
+		    *) 
+			tput rc; tput ed; continue;
+		      ;;
+	      esac
+	      ;;
+	    
+	    4)
+		## 马: 不会出现三马并线的"中马(进/退/平)几" (第2位代码-),或者
+		# 4/5个马并线的"(一/二/三/四/五)马平几"的走法(第2位代码abcde).
+		# 车, 炮同理.
+		case "$S2" in
+		    [a-eA-E\-])tput rc; tput ed; continue;
+		    ;;
+		esac
+		
+		;;
+	    
+	    5): #车
+		case "$S2" in
+		    [a-eA-E\-])tput rc; tput ed; continue;
+		    ;;
+		esac
+		;;
+	    
+	    6): #炮
+	        case "$S2" in
+		    [a-eA-E\-])tput rc; tput ed; continue;
+		    ;;
+		esac
+	    ;;
+	    7) #兵／卒
+	      case "$S3" in
+                  \+) #兵／卒前进时只能进一步
+		      if [ "$S4" != 1 ]; then
+			  tput rc; tput ed; continue;
+		      fi
+		      
+		      ;;
+                  \-) #兵／卒不能后退
+		      tput rc; tput ed; continue;
+		      ;;
+                  \.) #兵／卒左右平移时，只能移到相邻的竖线
+			  
+		      case "$S2" in
+			  # 两个或者最多5个兵／卒在同一条直线的情况
+			  [a-eA-E+-.]): ;;
+			  
+			  5)# 			      
+			      if [ "$S4" = '4' ] || [ "$S4" = '6' ]; then : ;
+ 			      else tput rc; tput ed; continue;
+			      fi
+			      
+			;;
+			  
+			  7)
+			if [ "$S4" = '8' ] || [ "$S4" = '6' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  3)
+			if [ "$S4" = '4' ] || [ "$S4" = '2' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			4)
+			if [ "$S4" = '5' ] || [ "$S4" = '3' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  6)
+			if [ "$S4" = '5' ] || [ "$S4" = '7' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			
+			8)
+			if [ "$S4" = '7' ] || [ "$S4" = '9' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  2)
+			if [ "$S4" = '3' ] || [ "$S4" = '1' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  
+			1)
+			if [ "$S4" = '2' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  9)
+			if [ "$S4" = '8' ]; then : ;
+ 			else tput rc; tput ed; continue;
+			fi
+			;;
+			  *)
+		      tput rc; tput ed; continue;
+		      ;;
+		      esac
+		      
+		      ;;
+		      ### CASE　兵／卒 $S2 vs. $S4 END
+		      
+
+		      *)
+			tput rc; tput ed; continue;
+		        ;;
+		      #esac
+	      esac
+ 	      ### CASE 兵／卒 $S3 END
+	      
+	      ;;
+	    
+	    *)## 其它无效的棋子数字代号(1-7以外的其它字符)
+		tput rc; tput ed; continue; ;;
+	    
+	    esac
+		      ### CASE: 7种棋子走子合法性判断完毕 END	
+
+	### TAG 2167: 更新棋局图
+	_show_fen_pos
+
+	### T1194: 
+	# 输出中文走棋记录．走棋后再把步数 STEP +1，为下一步的步数计数器做准备
+	tput rc; tput ed
+
+	## D1125: TEXT_MOVE: 每步走法的4个字
+	TEXT_MOVE="${ST8}${ST3}${ST4}"
+	
+	if [ "$TRUN" = 1 ]; then
+	    # 红方走法
+	    echo -en "$LOOP. $TEXT_MOVE  " | tee -a "$PGN_BODY";
+	    TRUN=0;
+	    
+	elif  [ "$TRUN" = '' ]; then
+      ## 如果 TRUN=空（即是第一步），先换行再输出让子文字，以免和前面 “让子”
+	    ## 相关的附加评论(如 {红无车一})连在同一行，影响排版效果。
+	    echo -en "\n$LOOP. $TEXT_MOVE  " | tee -a "$PGN_BODY";
+	    TRUN=0;
+	    
+	else # 黑方走法
+	    echo -e "$TEXT_MOVE" | tee -a "$PGN_BODY";
+	    let "LOOP += 1";
+	    TRUN=1;
+	fi    
+	tput sc
+	#tput cup "$CLINES" "$CCOL"
+
+
+	
+	# 步数　+1，为下一步做准备
+	let "STEP += 1";
+
+	### 如果上一步(不管黑方红方)是让先/停走, 在走完这一步的正常走法后,
+	#   把 停走标示 PAUSED 复位(意义下一步允许停走)
+	if [ "$PAUSED" = 1 ]; then
+	    unset PAUSED
+	fi
+	
+	## SHOW_COUNT=1: 只在 [摆子模式] 下，才在棋盘下方显示各棋子计数;
+	#  其它情况下（让子模式，让先/停走，正常走棋），都不显示棋子计数 
+	if [ "$SHOW_COUNT" = 1 ]; then
+	    unset SHOW_COUNT
+	fi
+	
+    
+    if [ "$DEBUG" = 1 ]; then
+      echo
+      echo -e "\tL1250: STEP=$STEP, LOOP=$LOOP; TRUN=$TRUN"
+    fi
+#esac  
+    continue;
+    ;;
+
+    ### TAG 1946:
+    
+# 对局结束相关操作代码
+  \*\*\*\* | \*\*++ | \*\*-- | \*\*.. | 0000 | 00.. | ..00)
+      ## 代码依次代表:
+      # **** = * {对局结束, 胜负未知} 
+      # **++ = 1-0 {红胜} 
+      # **-- = 1-0 {红胜} 
+      # **.. = 1/2-1/2 {和棋}
+      # 00.. = 1/2-1/2 {双方议和}
+      # ..0 = 1/2-1/2 {例和}
+      #
+      ## 2017-1-24 updated:
+      # 0000 = 0-1(或1-0) {红/黑方认输}
+      #
+      # 0[10][2-7][1-9]: 让子代码
+      
+      GAMEOVER=1 #对局是否结束. 1=结束,0=未知
+
+      # 对局胜负结果代码, 用于保存到[Result ""]标签, 以及走法的最后面
+      # 强制初始化变量,防止把上一局的对局结果,带到下一局,造成混乱
+      
+      STR_RESULT="*"
+      unset TEXT_RESULT 
+      
+      case "$STRING" in
+	  \*\*\*\*)STR_RESULT="*"; TEXT_RESULT="{对局结束}"
+     	    tput rc; tput ed;
+	    echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
+		   ;;
+	  \*\*++)STR_RESULT="1-0"; TEXT_RESULT="{红胜}" 
+     	    tput rc; tput ed;
+	    echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
+	    ;;
+	    
+	    \*\*--)STR_RESULT="0-1"; TEXT_RESULT="{黑胜}" 
+	     tput rc; tput ed;
+	     echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
+		    ;;
+
+	    ### T1496: 和棋
+	    \*\*..)STR_RESULT="1/2-1/2"; TEXT_RESULT="{和棋}"
+	      tput rc; tput ed;
+	      echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
+	      ;;
+
+	    00..)STR_RESULT="1/2-1/2"; TEXT_RESULT="{双方议和}"
+	      tput rc; tput ed;
+	      echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
+	      ;;
+	    
+	    ..00)STR_RESULT="1/2-1/2"; TEXT_RESULT="{例和}"
+	      tput rc; tput ed;
+	      echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
+	      ;;
+
+	    ## 一方自动认输
+	    0000)if [ "$TRUN" = 0 ]; then
+		     STR_RESULT="1-0"; TEXT_RESULT="{黑方认输}"
+		 else
+		     # TRUN = 1, 或者为空(如开局第1步红方就认输) 
+		     STR_RESULT="0-1"; TEXT_RESULT="{红方认输}"
+		     
+		 fi
+		 
+
+	      tput rc; tput ed;
+	      echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
+	      ;;
+
+
+
+      esac
+      
+
+      ### 以下开始 PGN 存盘文件的文件名处理...
+      ### TAG1553: 
+      #PGN_NAME_STYLE="1"
+
+      ### 保存的 PGN 文件名命名规则 (默认采用方案1). 各方案示例:
+      # 方案1: 17av0001.pgn (推荐和默认的方案)
+      #   或者 17av0001_161533_bkt0Da6ykb.png (如果17av0001.pgn 已存在,
+      #   如索引文件 .pgn_index 被删除或更改, 或者多个 cchess 同时运行
+      #   产生重名的情况. 后面的6位数字代表时分秒,最后面的10位是随机码
+      #
+      # 方案2: 2017-1231_2359-59-x1x2x3x4x5.pgn
+      # 方案3: 17av0001_2017-1231_2359-59.pgn
+      # 或者 方案3: 17av0001_2017-1231_2359-59-x1x2x3x4x5.pgn      
+
+
+      ## 把数字 PGN_NUM 强制转换为4位数. 如果原数值大于4位,截取最后4位
+      #  如果累计后大于 9999,重新从 0001 开始编号(暂未实现).
+      #     
+      #  注1: printf "%4s" 12345 的效果是保证不低于4位数.超过4位,显示全部
+      #  注2: 当前代码是保证不低于4位数,5位数以上的,直接提取,不需要用 printf
+      #       转换；
+
+      ## 如果数字位数低于4位数,如 1-999, 需要在序号数字前补0,变成4位数,
+      #  方便按文件名排序
+
+        if [[ "$PGN_NUM" -le 999 ]]; then
+	    PGN_4NUM=`printf "%4s" "$PGN_NUM" | sed '/ /s//0/g'`
+
+	    #echo "  L1488: PGN_4NUM=$PGN_4NUM; PGN_NUM=$PGN_NUM"
+	    
+        elif [[ "$PGN_NUM" -gt 9999 ]]; then
+	  PGN_4NUM="0001"; PGN_NUM=1;
+	  ## 每个对局结束后,或者在退出程序前,需要把 PGN_NUM 的数值(即序号)
+	  #  写入配置文件. 这样下次运行程序,会接着上次的编号. 
+        else
+	  PGN_4NUM="$PGN_NUM" ;
+        fi
+	
+  ## T1589: DATE_UNIX 及 _mk_pgn_datetime 取值, 用于 PGN 文件名
+
+	if [  "$PGN_NAME_STYLE" = 1 ]; then
+    # ------------------  	  
+    DATE_UNIX=`date +%s`
+    _mk_pgn_datetime
+    # ------------------ 
+
+    PGN_FILE="$PGN_DIR/${PGN_4DATE}${PGN_4NUM}.pgn"
+    if [ -s "$PGN_FILE" ]; then
+	## 如果 .pgn_index 索引文件被删除, 或者无法写入(序号不能更新),
+	## 或者同一电脑上多个 cchess 同时运行, 可能导致生成的文件名重名.
+	## 这种情况下,需要加上额外的 时分秒($DATE_06HMS), 随机码($STR_TMP),
+	## 来解决重名的问题.
+	#
+	## 注: 6位时分秒($DATE_06HMS), 10位随机码($STR_TMP)在
+	#  _mk_pgn_datetime ()
+	## 中已经生成了. 为了最大限度避免雷同,这里再更新一次随机码.
+
+	STR_TMP=`mktemp -u | cut -d'.' -f2`
+	
+      PGN_FILE="$PGN_DIR/${PGN_4DATE}${PGN_4NUM}_${DATE_06HMS}_${STR_TMP}.pgn"
+    fi
+    
+      #      PGN_FILE="$PGN_DIR/$PGN_UUID.pgn"
+      
+      elif [  "$PGN_NAME_STYLE" = 2 ]; then
+	  ## PGN 命名规则2(旧方案): 按 年月日-时分秒 定义,方便排序查找
+          PGN_FILE="$PGN_DIR/`date +%Y-%m%d_%H%M-%S`.pgn"
+	  
+      else
+  ## 见 T1629: DATE_UNIX 及 _mk_pgn_datetime 取值, 用于 PGN_UUID 索引
+    # ------------------  	  
+    DATE_UNIX=`date +%s`
+    _mk_pgn_datetime
+    # ------------------    
+	  ## PGN 命名规则3(新方案, 带有明显的序号, 方便查找):
+	  # 按 年月日-时分秒 定义,方便排序和查找
+    PGN_FILE="$PGN_DIR/${PGN_4DATE}${PGN_4NUM}_`date +%Y-%m%d_%H%M-%S`.pgn"
+    
+    #PGN_FILE="$PGN_DIR/${PGN_4DATE}${PGN_4NUM}_`date +%Y-%m%d_%H%M-%S`_${STR_TMP}.pgn"
+    
+      fi
+
+
+
+    
+      ## 更新胜负结果 Result 标签, 以及其它标签,
+ 
+    sed -i "/^\[Result /c[Result \"$STR_RESULT\"]" "$PGN_HEAD"
+
+    ### 及时更新 PGN_NUM 棋局索引序号数字(4位),减少程序意外退出的序号数值
+    ## 未保存导致的重号和序号回退
+    
+    #let "PGN_NUM += 1"    
+    #echo "$PGN_NUM" > "$PGN_INDEX"
+
+    ###
+
+    ### T1629: 
+    ### 更新 PGN 文件头中的 [Index ""] 标签的 PGN_UUID 索引数据,
+    ##  用来区分和定位同一 PGN 文件中的多个对局
+    # ------------------    
+    DATE_UNIX=`date +%s`
+    _mk_pgn_datetime
+    # ------------------
+    
+### 生成10位随机字符串, 用作 PGN_UUID 的附加码, 防止重号
+STR_TMP=`mktemp -u | cut -d'.' -f2`
+
+    PGN_UUID="${PGN_4DATE}-${DATE_06HMS}-${PGN_4NUM}-${STR_TMP}"
+    sed -i "/^\[Index /c[Index \"$PGN_UUID\"]" "$PGN_HEAD"   
+
+    
+## （可选）更新 FEN 开局棋子布局数据（适用于 让子模式 和 摆子/残局模式）
+# 如：标准开局的 FEN 标签:
+#[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+
+    ## TAG 2384.1: 
+  if [ "$MODE_MISS" = 1 ] ||  [ "$MODE_MISS" = 2 ];then
+STR_FEN=`echo "${row9[*]}/${row8[*]}/${row7[*]}/${row6[*]}/${row5[*]}/${row4[*]}/${row3[*]}/${row2[*]}/${row1[*]}/${row0[*]}" | sed "/ /s///g;/111111111/s//9/g;/11111111/s//8/g;/1111111/s//7/g;/111111/s//6/g;/11111/s//5/g;/1111/s//4/g;/111/s//3/g;/11/s//2/g;"`
+echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
+
+   else  _mk_default_fen >> "$PGN_HEAD"
+   fi
+
+    
+         #DEBUG=1
+    if [  "$DEBUG" = 1 ]; then
+        echo -e "  TAG 2143:\n\tSTR_FEN=$STR_FEN\n\tPGN_UUID=$PGN_UUID\n"
+	#sleep 10;
+    fi
+      
+      cat "$PGN_HEAD" >> "$PGN_FILE"
+
+     
+      ## 此时 PGN_BODY 临时文件中, 已经包含对局胜负结果, 以及结果的文字说明,
+      #  如: {红胜}
+      cat "$PGN_BODY" >> "$PGN_FILE"
+      #echo -e "${STR_RESULT} ${TEXT_RESULT}\n" >> "$PGN_FILE"
+
+      ### 如此时 PGN 文件已经保存成功. PGN_UUID 里的 PGN_NUM 序号计数应 +1,
+      #   并及时写入新的序号数值
+      #echo "  L1570: PGN_NUM=$PGN_NUM"
+      
+      let "PGN_NUM += 1"
+
+      #echo "  L1572: PGN_NUM=$PGN_NUM"      
+      ## 注意: 可以使用 echo -n 参数(即不换行)；也可以不带 -n 参数(带换行符)
+      echo -n "$PGN_NUM" > "$PGN_INDEX"
+
+      #
+
+      break; #T719: 保存/导出PGN/FEN文件后,退出程序
+
+
+      
+  #tput rc; tput ed; continue; 
+  ;;
+
+  ## TAG 2376： 评论模式
+  //++)
+      ## 2017-1-24 注: 评论功能暂有缺陷:退出 [评论模式] 后，会返回
+      ##  [走棋模式]，这时如果按 Ctrl +C, 不能强行退出程序，而是进入
+      ## 僵死状态----要按 Ctrl +Z 来退出。或者改为在 [走棋模式] 下，
+      ## 使用对局结束相关代码（如 ****）来正常退出并保存为 PGN 文件。
+      #
+
+      # 进入评论模式
+      tput rc; tput ed;
+      #continue;
+      
+      # 用红色显示 “评论模式”4个字 cmd: echo -e "\e[1;31m TEXT \e[0m"
+      echo -e "\n  进入 [\e[1;31m评论模式\e[0m]"
+      echo -e "  (返回 [走棋模式]: 输入评论文字后(可以换行), 先按回车键\
+,再同时按 Ctrl + C )"      
+
+      ## usage: trap 'cmd' HUP INT QUIT TERM EXIT
+      PGN_DESC=`mktemp`
+      
+      ## 注: 输入内容后 (可以多次换行), 再多按一次回车键换行,
+      #  最后再按 Ctrl + C 退出评论模式,
+      #     返回走棋模式
+
+      ## TAG 2460: 
+      MODE_MOVE=0  # INIT
+      
+      until [ "$MODE_MOVE" = 1 ]; do
+      trap "{
+
+      ## 注1: trap 里面的程序,只在捕获到信号退出时,才会开始执行
+      ## 注2: trap的花括号里面, 不要用双引号,会提示: 错误的 SIG???
+       
+         tput rc; tput ed;
+         MODE_MOVE=1
+         #break;
+           #continue;
+
+             }" SIGINT
+      #done
+      
+      echo -n " {" > "$PGN_DESC"
+      cat >> "$PGN_DESC"
+
+      #
+      echo  "}" >> "$PGN_DESC"
+      cat "$PGN_DESC" >> "$PGN_BODY"
+      tput rc; tput ed;
+      break;
+      done
+      tput rc; tput ed;
+      echo -e '\n  进入 [\e[1;32m走棋模式\e[0m]'    
+      #
+      continue;
+      #break;
+  ;;
+
+  	    ###  T2215: 让子模式：
+	    0[10][2-7][1-9])	
+
+		## 如果已经走棋过了（即 TRUN=1 或者 =0）,无法进行让子操作。
+		# （即使是开局时的让几先/停走，也算走棋操作）。
+		#  会自动清除操作代码，重新输入；
+		
+		if [ "$TRUN" != '' ]; then
+		    tput rc; tput ed; continue;
+		fi
+		
+	### -----------------------------------------	
+	#   注意：定义其它以0开头的操作代码时，需要避开 [让子模式] 用到的
+	#        代码，以免造成混乱.
+	#
+	# 第1位：0代表进入 [让子模式]；
+	# 第2位：1=红方棋子，0=黑方棋子
+	# 第3位：2-7：依次代表:仕相马车炮兵(红方)，或者:将士象马车炮卒(黑方).
+	#       因为不可能让将/帅，所以不会使用数字代码 1；
+	# 第4位：1-9，代表拿走的棋子所在原始位置的中文竖线的第几线。如
+	#       0151 代表：{红无车一}
+	#       0059 代表：{黑无车9} 。如果没让这个车，它的走法可能是：车9进2
+	#       说明：上面表示的红车(车一)和黑车(车9)在同一条直线上.
+	##
+
+	#  其它待实现功能和处理流程：
+	#  * 红方/黑方的所有让子输入完成后，下一步只要输入正常的走棋代码，
+	#    并对当前棋子的位置
+	#    有效性进行判断确认，再把让子后的所有的相邻空位代码1进行合计，
+	#    写入当前行（从下往上依次为0-9行） 的 FEN_TMP_ROW 变量,
+	#       最后再合并到 FEN_OK 变量（即整个棋盘棋子布局）。
+	#
+	#    棋子坐标和数量有效性判定说明：
+	#  帅/将只能在九宫内（一二三楼，以及竖线456路）；
+	#  仕/士只能在九宫内（一三楼46路，或者二楼5路）；	
+	#  相/象只能在一三五楼（一五楼37路，或者三楼159路）；
+	#  兵/卒只能在自己四五楼的13579路（未过河，只能进，不能左右走动；
+        #     且在同一竖线上，自己的四五楼不可能出现两个前后兵/卒），
+	#     或者对方的地界（已过河，可以 左/右/前 走动）；
+	#  其它棋子：车/马/炮位置无明显限制，但要统计每种棋子的个数，防止
+	#  棋子总数出现6个兵/卒，或者3个其它棋子，或者2个帅/将的错误棋局。
+
+	### ============================
+	
+    S1=`echo "$STRING" | cut -c 1`
+    S2=`echo "$STRING" | cut -c 2`
+    S3=`echo "$STRING" | cut -c 3`
+    S4=`echo "$STRING" | cut -c 4`
+    
+    # 说明: tr 命令对中文全角文字和符号无法正确处理, 需要改用 sed,
+    # 或者 case 语句
+
+    case "$S2" in
+	# * S2=1.
+	1) # 红方：先判断让子的合法性，以及是否已经让过这个棋子。
+	    # 再进行棋子名称转换(数字2-7转成中文棋子).
+	    # 如果是针对外国用户,可能是数字转为单个大写或小写字母
+
+	    case "${S3}" in
+		# ** S2=1.S3=5422
+		[5432]) # （红方）车马仕相，
+
+	    ## ----
+	    case "${S3}${S4}" in 
+		# *** S2=1.S3=5432.S3S4=??
+
+		59) # （红方）车，9路
+		    if [ "${row0[0]}" != '1' ]; then
+			# 作记录，这个棋子已经让过了，下次不能再让了。
+			# 在 FEN 数据中，数字 1 代表单个空位（无棋子）。			
+
+	   		## 把棋子代码转换成中文文字（如：兵）
+		      if [ -n "$R5" ]; then ST3="$R5"; else ST3="$S3";
+		      fi
+			row0[0]=1;  
+		    else
+			# 判定为无效的让子。清除无效的让子代码，等待重新输入。
+			tput rc; tput ed; continue;
+		    fi
+		    ;;
+		
+		51) # （红方）车，1路
+		    if [ "${row0[8]}" != '1' ]; then row0[8]=1; 
+		      if [ -n "$R5" ]; then ST3="$R5"; else ST3="$S3";
+		      fi
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		#
+		48) # （红方）马，8路
+		    if [ "${row0[1]}" != '1' ]; then row0[1]=1; 
+		      if [ -n "$R4" ]; then ST3="$R4"; else ST3="$S3";
+		      fi
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		42) # （红方）马，2路
+		    if [ "${row0[7]}" != '1' ]; then row0[7]=1; 
+		      if [ -n "$R4" ]; then ST3="$R4"; else ST3="$S3";
+		      fi
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		#
+		37) # （红方）相，7路
+		    if [ "${row0[2]}" != '1' ]; then row0[2]=1; 
+		      if [ -n "$R3" ]; then ST3="$R3"; else ST3="$S3";
+		      fi
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		33) # （红方）相，3路
+		    if [ "${row0[6]}" != '1' ]; then row0[6]=1; 
+		      if [ -n "$R3" ]; then ST3="$R3"; else ST3="$S3";
+		      fi
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		#
+		26) # （红方）仕，6路
+		    if [ "${row0[3]}" != '1' ]; then row0[3]=1; 
+		      if [ -n "$R2" ]; then ST3="$R2"; else ST3="$S3";
+		      fi
+
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		24) # （红方）仕，4路
+		    if [ "${row0[5]}" != '1' ]; then row0[5]=1; 
+		      if [ -n "$R2" ]; then ST3="$R2"; else ST3="$S3";
+		      fi
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		*) # （红方）底线出现错误的位置/棋子。清除错误指令。
+		    tput rc; tput ed; continue;
+		;;
+	    esac
+
+	    # ====
+	    
+	    ;;
+
+	
+	6) # 炮, row2[@]
+
+	    case "${S3}${S4}" in 
+
+		68) # （红方）炮，8路
+		    if [ "${row2[1]}" != '1' ]; then row2[1]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		62) # （红方）炮，2路
+		    if [ "${row2[7]}" != '1' ]; then row2[7]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		*) # （红方）出现错误的位置/棋子。清除错误代码。
+		    tput rc; tput ed; continue;
+		;;
+	    esac
+	    
+	    if [ -n "$R6" ]; then ST3="$R6"; else ST3="$S3"; fi		
+	;;
+
+	7) # 兵, row3[@]
+	    case "${S3}${S4}" in 
+		79) # （红方）兵，9路
+		    if [ "${row3[0]}" != '1' ]; then row3[0]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		77) # （红方）兵，7路
+		    if [ "${row3[2]}" != '1' ]; then row3[2]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		75) # （红方）兵，5路
+		    if [ "${row3[4]}" != '1' ]; then row3[4]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		73) # （红方）兵，3路
+		    if [ "${row3[6]}" != '1' ]; then row3[6]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		71) # （红方）兵，1路
+		    if [ "${row3[8]}" != '1' ]; then row3[8]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		*) # （红方）出现错误的位置/棋子。清除错误代码。
+		    tput rc; tput ed; continue;
+		    ;;
+
+		esac
+
+		## 把棋子代码转换成中文文字（如：兵）
+		if [ -n "$R7" ]; then ST3="$R7"; else ST3="$S3"; fi
+
+
+		;; # 红兵行结束
+
+
+	*) # （红方）出现错误的棋子 S3，无效。清除错误代码。
+	    tput rc; tput ed; continue;
+		;;
+
+    ### CASE $S3 END ###
+
+     esac 
+
+	
+	if [ -n "$RED" ]; then ST2="$RED"; else ST2="$S2"; fi
+	
+     	## ------------
+        case "$S4" in
+	1)if [ -n "$R_ONE" ]; then ST4="$R_ONE"; else ST4="$S4"; fi ;;
+	2)if [ -n "$R_TWO" ]; then ST4="$R_TWO"; else ST4="$S4"; fi ;;
+	3)if [ -n "$R_THREE" ]; then ST4="$R_THREE"; else ST4="$S4"; fi ;;
+	4)if [ -n "$R_FOUR" ]; then ST4="$R_FOUR"; else ST4="$S4"; fi ;;
+	5)if [ -n "$R_FIVE" ]; then ST4="$R_FIVE"; else ST4="$S4"; fi ;;
+	6)if [ -n "$R_SIX" ]; then ST4="$R_SIX"; else ST4="$S4"; fi ;;
+	7)if [ -n "$R_SEVEN" ]; then ST4="$R_SEVEN"; else ST4="$S4"; fi ;;
+	8)if [ -n "$R_EIGHT" ]; then ST4="$R_EIGHT"; else ST4="$S4"; fi ;;
+	9)if [ -n "$R_NINE" ]; then ST4="$R_NINE"; else ST4="$S4"; fi ;;
+
+	*) # 其它无效的竖线代码，自动清除，等待重新输入
+	tput rc; tput ed; continue;
+	    ;;
+	esac
+      	# ============
+	
+    ;;
+	### CASE [ S2 = 1 ] END ###
+	
+	0) 
+
+	 # 黑方：先判断让子的合法性，以及是否已经让过这个棋子。
+	    # 再进行棋子名称转换(数字2-7转成中文棋子).
+	    # 如果是针对外国用户,可能是数字转为单个大写或小写字母
+
+	    case "${S3}" in
+
+		[5432]) # （黑方）车马士象，
+
+	    ## ----
+	    case "${S3}${S4}" in 
+		# *** S2=1.S3=5432.S3S4=??
+
+		51) # （黑方）车，1路
+		    if [ "${row9[0]}" != '1' ]; then
+			# 作记录，这个棋子已经让过了，下次不能再让了。
+			# 在 FEN 数据中，数字 1 代表单个空位（无棋子）。			
+			row9[0]=1;  
+		    else
+			# 判定为无效的让子。清除无效的让子代码，等待重新输入。
+			tput rc; tput ed; continue;
+		    fi
+		    ;;
+		
+		59) # （黑方）车，9路
+		    if [ "${row9[8]}" != '1' ]; then row9[8]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		#
+		42) # （黑方）马，2路
+		    if [ "${row9[1]}" != '1' ]; then row9[1]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		48) # （黑方）马，8路
+		    if [ "${row9[7]}" != '1' ]; then row9[7]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		#
+		33) # （黑方）象，3路
+		    if [ "${row9[2]}" != '1' ]; then row9[2]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		37) # （黑方）象，7路
+		    if [ "${row9[6]}" != '1' ]; then row9[6]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		#
+		24) # （黑方）士，4路
+		    if [ "${row9[3]}" != '1' ]; then row9[3]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		26) # （黑方）士，6路
+		    if [ "${row9[5]}" != '1' ]; then row9[5]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		*) # （黑方）底线出现错误的位置/棋子。清除错误指令。
+		    tput rc; tput ed; continue;
+		;;
+	    esac
+
+
+	    # ====
+	    
+	    ## 把棋子代码转换成中文文字
+	    case "${S3}" in 
+	      4)if [ -n "$B4" ]; then ST3="$B4"; else ST3="$S3"; fi ;;
+	      5)if [ -n "$B5" ]; then ST3="$B5"; else ST3="$S3"; fi ;;
+
+	      2)if [ -n "$B2" ]; then ST3="$B2"; else ST3="$S3"; fi ;;
+	      3)if [ -n "$B3" ]; then ST3="$B3"; else ST3="$S3"; fi ;;
+	      *): ;;
+	    esac
+
+	    ;;
+
+	
+	6) # 炮, row7[@]
+
+	    case "${S3}${S4}" in 
+
+		62) # （黑方）炮，2路
+		    if [ "${row7[1]}" != '1' ]; then row7[1]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		68) # （黑方）炮，8路
+		    if [ "${row7[7]}" != '1' ]; then row7[7]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		*) # （黑方）出现错误的位置/棋子。清除错误代码。
+		    tput rc; tput ed; continue;
+		;;
+	    esac
+	    
+	    if [ -n "$B6" ]; then ST3="$B6"; else ST3="$S3"; fi		
+	;;
+
+	7) # 卒, row6[@]
+	    case "${S3}${S4}" in 
+		71) # （黑方）卒，1路
+		    if [ "${row6[0]}" != '1' ]; then row6[0]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		73) # （黑方）卒，3路
+		    if [ "${row6[2]}" != '1' ]; then row6[2]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		75) # （黑方）卒，5路
+		    if [ "${row6[4]}" != '1' ]; then row6[4]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		77) # （黑方）卒，7路
+		    if [ "${row6[6]}" != '1' ]; then row6[6]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		79) # （黑方）卒，9路
+		    if [ "${row6[8]}" != '1' ]; then row6[8]=1; 
+		    else tput rc; tput ed; continue;
+		    fi
+		    ;;
+
+		*) # （黑方）出现错误的位置/棋子。清除错误代码。
+		    tput rc; tput ed; continue;
+		    ;;
+
+		esac
+
+		## 把棋子代码转换成中文文字（如：卒）
+		if [ -n "$B7" ]; then ST3="$B7"; else ST3="$S3"; fi
+
+
+		;; # 红卒行结束
+
+		# **/ S2=1.S3=?
+
+	*) # （黑方）出现错误的棋子 S3，无效。清除错误代码。
+	    tput rc; tput ed; continue;
+		;;
+
+    ### CASE $S3 END ###
+	
+
+	## TAG 2464.2: 
+	
+     esac 
+
+
+	if [ -n "$BLACK" ]; then ST2="$BLACK"; else ST2="$S2"; fi
+	
+     	## ------------
+        case "$S4" in
+	1)if [ -n "$B_ONE" ]; then ST4="$B_ONE"; else ST4="$S4"; fi ;;
+	2)if [ -n "$B_TWO" ]; then ST4="$B_TWO"; else ST4="$S4"; fi ;;
+	3)if [ -n "$B_THREE" ]; then ST4="$B_THREE"; else ST4="$S4"; fi ;;
+	4)if [ -n "$B_FOUR" ]; then ST4="$B_FOUR"; else ST4="$S4"; fi ;;
+	5)if [ -n "$B_FIVE" ]; then ST4="$B_FIVE"; else ST4="$S4"; fi ;;
+	6)if [ -n "$B_SIX" ]; then ST4="$B_SIX"; else ST4="$S4"; fi ;;
+	7)if [ -n "$B_SEVEN" ]; then ST4="$B_SEVEN"; else ST4="$S4"; fi ;;
+	8)if [ -n "$B_EIGHT" ]; then ST4="$B_EIGHT"; else ST4="$S4"; fi ;;
+	9)if [ -n "$B_NINE" ]; then ST4="$B_NINE"; else ST4="$S4"; fi ;;
+
+	*) # 其它无效的竖线代码，自动清除，等待重新输入
+	tput rc; tput ed; continue;
+	    ;;
+	esac
+      	# ============
+	
+    ;;
+	### CASE [ S2 = 0 ] END ###	
+
+	
+	*) # 其它无效代码(只允许红方1,黑方0 两种代码)，自动清除，等待重新输入
+	tput rc; tput ed; continue;
+    ;;    
+    esac
+    
+    
+
+     ### 让子代码第1位的取值和变通
+    #
+    #  （注：第1位代码只能是数字0，代表进入 [让子模式]）
+    # 后面输出 让子走法时，会调整第1/2个文字的前后顺序，改为
+    # 红无车一，黑无车9 这种文字顺序。
+
+	if [ -n "$MISS" ]; then
+	      ST1="$MISS"
+        else ST1="$S1"
+        fi
+	
+	##  把第1，2位代码转换成对应的文字。如： 红无，黑无
+	#
+	## T1125: TEXT_MISS: 让子棋每步走法的4个字, 并用花括号 { } 包起来，
+	#  如：{红无车一}，{黑无车9}
+	TEXT_MISS="${ST2}${ST1}${ST3}${ST4}"
+
+	## MODE_MISS: 是否有过让子操作。
+	# 1: 有让子；0或者空：未让子（即标准开局）；2：摆子模式
+	#  主要用于生成开局 FEN 棋子布局图。
+	#  如果是标准开局，直接使用标准 FEN 开局数据。
+	if [ "$MODE_MISS" != 1 ] && [ "$MODE_MISS" != 2 ]; then
+	  MODE_MISS=1
+	fi
+
+	# 清除让子代码
+	tput rc; tput ed;
+	
+	# 输出让子文字 (红方或者黑方无子), 保存到临时文件
+	echo -en "{$TEXT_MISS} " | tee -a "$PGN_BODY";
+   
+	tput sc
+ 
+    continue; 
+    ;; 
+	    
+
+   ### ==== 让子模式结束 ====
+
+	    
+
+ [hH][eE][lL][pP])
+     _sample_wxf_00;
+
+     continue; 
+  ;;
+
+  [mM][oO][rR][eE] | [tT][oO][dD][oO])
+     _sample_wxf_extra;
+
+     continue; 
+     ;;
+  [dD][oO][nN][eE])
+     _option_done;
+
+     continue; 
+     ;;
+
+  ### TAG 3000: 摆子模式
+  //--)
+      ## 如果红黑任意一方已经走子，无法进入 [摆子模式]。清除代码，重新输入
+      if [ "$TRUN" = 1 ] || [ "$TRUN" = 0 ]; then
+	  tput rc; tput ed; continue;
+      fi
+      
+      _option_fen
+      
+      ## 1. [摆子模式] 的代码规则：
+      # 第1位：横向X坐标（从左到右，1-9，对应 ICCS 横向坐标A-I）；
+      # 第2位：竖向Y坐标（从下到上，0-9）;
+      # 第3位：1/0 （1=红方，0=黑方）；
+      # 第4位：1-7 ，分别对应棋子：（红方）帅仕相马车炮兵，（黑方）将士象马车炮卒；
+      #    特殊代码：第3,4位是00,代表清除这个坐标的棋子；
+      #  例： 1015 {A0红车}, 2014 {B0红马},
+      #      1905 {A9黑车}, 2904 {B9黑马},
+      #
+      ## 2. 校验规则：
+      #  * 确认棋子是否能出现在当前位置（如将士象不能过河，将士不能出九宫，
+      #     相/象只能在一三五楼；兵/卒不能在本方一二三楼...）
+      #  * 确认每种棋子的数量不得超过1/2/5个；
+      #  * 清除某坐标点位的棋子后，即时更新对应的数组；
+      #
+      ## 3. 数组定义
+      # xy_r1: XY of Red piece 1# (King）. 红将坐标数组。里面保存的是两位数字坐标，
+      #          如：红兵（默认五子的位置）： xy_r7=( 13 33 53 73 93 )
+      # 用途：1.记录每种棋子的坐标；
+      #      2.走棋/摆子时检查每种棋子总数是否超标（> 1/2/5 个）
+      #declare -a xy_r1 xy_r2 xy_r3 xy_r4 xy_r5 xy_r6 xy_r7
+      #declare -a xy_b1 xy_b2 xy_b3 xy_b4 xy_b5 xy_b6 xy_b7
+      
+      ## init: 先把数组 ro9w-row0, pos[*],  的全部棋盘坐标点位的棋子类型信息
+      #  设为1（即空棋格），
+
+      
+      row9=( 1 1 1 1 1 1 1 1 1 )
+      row8=( ${row9[@]} ); row7=( ${row9[@]} ); row6=( ${row9[@]} );
+      row5=( ${row9[@]} ); row4=( ${row9[@]} ); row3=( ${row9[@]} );
+      row2=( ${row9[@]} ); row1=( ${row9[@]} ); row0=( ${row9[@]} );      
+
+      
+      for a in `seq 10 99`; do
+	  pos[a]=1
+      done
+      
+
+      ##--------------------------
+      until [ "$MODE_MISS" = 2 ]; do
+
+    ## TAG 2981: 
+
+    tput sc
+
+	
+read -n 4 STRING
+
+  ## ------
+case "$STRING" in
+    \*\*\*\*): # 退出[摆子模式]
+	     MODE_MISS=2;
+	     # =2 说明是[摆子模式]，会生成残局的布子图，而不是标准开局布子图
+	     tput rc; tput ed;
+	     echo -e "\n  进入 [\e[1;32m走棋模式\e[0m]";
+	     break;
+	 ;;
+    
+    [1-9][0-9][10][1-7] | [1-9][0-9]00)
+  	
+    S1=`echo "$STRING" | cut -c 1`
+    S2=`echo "$STRING" | cut -c 2`
+    S3=`echo "$STRING" | cut -c 3`
+    S4=`echo "$STRING" | cut -c 4`	
+
+    ## S1 --> SX1：数字1-9转换成 ICCS X 轴横向坐标字母A-I
+    SX1=`echo "$S1" | tr '1-9' 'A-I'`
+
+    ## S2: 不需要处理和处理
+
+    ## S3, S4:
+    # 如果3,4位是00,输出如：{A0无子}
+
+    
+    # --- 3
+    case "$S3" in
+	1)if [ -n "$RED" ]; then
+	      ST3="$RED"
+	  else	ST3="R"
+	  fi
+	  
+	  p="${S1}${S2}";
+	  
+     ## ------------
+      case "$S4" in
+	  1)
+	      ## 1.检查棋子数量是否超过1/2/5个; 2.检查棋子位置的有效性；
+	      #  3.如果原位置有其它棋子，则其它棋子的数组减记一次，当前
+	      #    棋子数组加记一次；
+
+	      ## 检查当前兵种棋子的总数量是否超标
+	      if [[ "${#xy_r1[*]}" -ge 1 ]]; then
+		  tput rc; tput ed; continue;
+	      fi
+	      
+	    case "$p" in
+		[456][012]) # 有效的坐标点位
+		   
+			## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+
+			    A) # 删除旧棋子数组中的原坐标数字（2位数），实现减记一次
+				   xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			    N | H) xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_r1=( "$p" ); pos[p]='K';
+		   	;;
+		
+		*)tput rc; tput ed; continue; ;;
+	    esac
+	    if [ -n "$R1" ]; then ST4="$R1"; else ST4="$S4"; fi; 
+	    ;;
+	  
+	  2)	      ## 检查当前兵种棋子的总数量是否超标
+	      if [[ "${#xy_r2[*]}" -ge 2 ]]; then
+		  tput rc; tput ed; continue;
+	      fi
+	    case "$p" in
+		51 | [46][02])
+
+			## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    K) unset xy_r1 ;;
+			    A)tput rc; tput ed; continue; ;;
+			    #	   xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    			       
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			    N | H) xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_r2=( ${xy_r2[*]} "$p" ); pos[p]='A';		    
+					    ;;
+		*)tput rc; tput ed; continue; ;;
+	    esac	    
+	    if [ -n "$R2" ]; then ST4="$R2"; else ST4="$S4"; fi;
+	    ;;
+	  3)	      if [[ "${#xy_r3[*]}" -ge 2 ]]; then
+		  tput rc; tput ed; continue;
+		      fi
+		      
+		      case "$p" in
+		[37][04] | [159]2)
+		   
+			## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    K) unset xy_r1 ;;
+			    A) xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) # xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			       tput rc; tput ed; continue; ;;
+			    N | H) xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_r3=( ${xy_r3[*]} "$p" ); pos[p]='B';		    
+		    ;;
+		
+		*)tput rc; tput ed; continue; ;;
+	    esac
+	    if [ -n "$R3" ]; then ST4="$R3"; else ST4="$S4"; fi; 
+	    ;;
+	  4)	      if [[ "${#xy_r4[*]}" -ge 2 ]]; then
+		  tput rc; tput ed; continue;
+		      fi
+				## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    K) unset xy_r1 ;;
+			    A) xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    N | H) # xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			       tput rc; tput ed; continue; ;;
+			    
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+    			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_r4=( ${xy_r4[*]} "$p" ); pos[p]='N';	      
+
+	    
+	    if [ -n "$R4" ]; then ST4="$R4"; else ST4="$S4"; fi;
+	    ;;
+	  5) if [[ "${#xy_r5[*]}" -ge 2 ]]; then
+
+		 tput rc; tput ed; continue;
+	     fi
+				## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    K) unset xy_r1 ;;
+			    A) xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    N | H)  xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    
+			    R) #xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			      tput rc; tput ed; continue; ;;
+			    
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+    			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_r5=( ${xy_r5[*]} "$p" ); pos[p]='R';	     
+	     
+	      
+	    if [ -n "$R5" ]; then ST4="$R5"; else ST4="$S4"; fi;
+
+	    ;;
+	  6) if [[ "${#xy_r6[*]}" -ge 2 ]]; then
+		  tput rc; tput ed; continue;
+	     fi
+				## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    K) unset xy_r1 ;;
+			    A) xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    N | H)  xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			      
+			    
+			    C) # xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			       tput rc; tput ed; continue; ;;
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+    			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_r6=( ${xy_r6[*]} "$p" ); pos[p]='C';
+
+			if [ -n "$R6" ]; then ST4="$R6"; else ST4="$S4"; fi;
+	   
+	    ;;
+	  7) if [[ "${#xy_r7[*]}" -ge 5 ]]; then
+		  tput rc; tput ed; continue;
+	     fi
+
+	     case "$p" in
+		[13579][34] | [1-9][5-9])
+	## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+
+			    N | H)  xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    P) # xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			      tput rc; tput ed; continue; ;;
+			    
+    			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_r7=( ${xy_r7[*]} "$p" ); pos[p]='P';
+		    
+		 ;;
+		*)tput rc; tput ed; continue; ;;
+	    esac
+	    if [ -n "$R7" ]; then ST4="$R7"; else ST4="$S4"; fi; 
+	    ;;
+	
+	*)tput rc; tput ed;
+	  continue ;;
+      esac
+      # ============
+	  
+	  ;;
+	
+	0)if [ "$S4" != 0 ] && [ -n "$BLACK" ]; then
+	      
+	      ST3="$BLACK"
+	  elif [ "${S4}" = '0' ] && [ -n "$NONE" ]; then
+	      ST3="$NONE"
+	      else	ST3="B"
+	  fi
+	  
+	  p="${S1}${S2}";
+	  
+     ## ------------
+      case "$S4" in
+	  0) ## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    tput rc; tput ed; continue; ;;
+			    
+			    K) unset xy_r1 ;;
+			    A) xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    N | H) xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+    			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 把当前坐标设为空位(空位的 FEN 代码为1)
+			pos[p]='1';
+			
+			ST4=""; 
+	     ;;
+	  
+	1)
+	      ## 1.检查棋子数量是否超过1/2/5个; 2.检查棋子位置的有效性；
+	      #  3.如果原位置有其它棋子，则其它棋子的数组减记一次，当前
+	      #    棋子数组加记一次；
+
+	      ## 检查当前兵种棋子的总数量是否超标
+	      if [[ "${#xy_b1[*]}" -ge 1 ]]; then
+		  tput rc; tput ed; continue;
+	      fi
+	    case "$p" in
+		[456][987])
+
+			## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+
+			    a) # 删除旧棋子数组中的原坐标数字（2位数），实现减记一次
+				   xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    N | H) xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_b1=( "$p" ); pos[p]='k';		    
+			   ;;
+		*)tput rc; tput ed; continue; ;;
+	    esac
+	    if [ -n "$B1" ]; then ST4="$B1"; else ST4="$S4"; fi; 
+	    ;;
+	
+	2)## 检查当前兵种棋子的总数量是否超标
+	      if [[ "${#xy_b2[*]}" -ge 2 ]]; then
+		  tput rc; tput ed; continue;
+	      fi
+
+	      case "$p" in
+		 58 | [46][97])
+	## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    k) unset xy_b1 ;;
+			    a)tput rc; tput ed; continue; ;;
+			    #	   xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    			       
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    N | H) xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_b2=( ${xy_b2[*]} "$p" ); pos[p]='a';	
+			      ;;
+		*)tput rc; tput ed; continue; ;;
+	     esac
+	     
+	     if [ -n "$B2" ]; then ST4="$B2"; else ST4="$S4"; fi;
+	     
+		    ;;
+	3)if [[ "${#xy_b3[*]}" -ge 2 ]]; then
+		  tput rc; tput ed; continue;
+	  fi
+
+	  case "$p" in
+	      [37][95] | [159]7)
+## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) # xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			       tput rc; tput ed; continue; ;;
+			    N | H) xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_b3=( ${xy_b3[*]} "$p" ); pos[p]='b';	
+		  ;;
+	      
+		*)tput rc; tput ed; continue; ;;
+	  esac
+	  if [ -n "$B3" ]; then ST4="$B3"; else ST4="$S4"; fi;
+	  ;;
+	
+	4)if [[ "${#xy_b4[*]}" -ge 2 ]]; then
+		  tput rc; tput ed; continue;
+	  fi
+	  ## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    K) unset xy_r1 ;;
+			    A) xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    N | H) xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+    			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    n | h) # xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			      tput rc; tput ed; continue; ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_b4=( ${xy_b4[*]} "$p" ); pos[p]='n';
+	
+	  if [ -n "$B4" ]; then ST4="$B4"; else ST4="$S4"; fi; 
+	  ;;
+	5)if [[ "${#xy_b5[*]}" -ge 2 ]]; then
+
+		 tput rc; tput ed; continue;
+	  fi
+	  ## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    K) unset xy_r1 ;;
+			    A) xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    N | H)  xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			      
+			    
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+    			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) # xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			      tput rc; tput ed; continue; ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_b5=( ${xy_b5[*]} "$p" ); pos[p]='r';	
+	
+	  if [ -n "$B5" ]; then ST4="$B5"; else ST4="$S4"; fi; 
+	  ;;
+	6)if [[ "${#xy_b6[*]}" -ge 2 ]]; then
+		  tput rc; tput ed; continue;
+	  fi
+	  ## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    K) unset xy_r1 ;;
+			    A) xy_r2=( `echo "${xy_r2[*]}" | sed "/$p/s///"` ) ;;
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    N | H)  xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			      
+			    
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			       
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+    			    k) unset xy_b1 ;;
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) # xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			      tput rc; tput ed; continue; ;;
+			    p) xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			    
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_b6=( ${xy_b6[*]} "$p" ); pos[p]='c';
+	  if [ -n "$B6" ]; then ST4="$B6"; else ST4="$S4"; fi; 
+	  ;;
+	7)if [[ "${#xy_b7[*]}" -ge 5 ]]; then
+		  tput rc; tput ed; continue;
+	  fi
+
+	  case "$p" in
+	      [13579][56] | [1-9][0-4])
+## ---- 
+			case "${pos[p]}" in
+			    1 | '') # 原位置是空格（无棋子）.
+				    : ;;
+			    
+			    B | E) xy_r3=( `echo "${xy_r3[*]}" | sed "/$p/s///"` ) ;;
+
+			    N | H)  xy_r4=( `echo "${xy_r4[*]}" | sed "/$p/s///"` ) ;;
+			    R) xy_r5=( `echo "${xy_r5[*]}" | sed "/$p/s///"` ) ;;
+			    C) xy_r6=( `echo "${xy_r6[*]}" | sed "/$p/s///"` ) ;;
+			    P) xy_r7=( `echo "${xy_r7[*]}" | sed "/$p/s///"` ) ;;
+			    
+    			    K) unset xy_r1 ;;
+			    
+			    a) xy_b2=( `echo "${xy_b2[*]}" | sed "/$p/s///"` ) ;;
+			    b | e) xy_b3=( `echo "${xy_b3[*]}" | sed "/$p/s///"` ) ;;
+			    n | h) xy_b4=( `echo "${xy_b4[*]}" | sed "/$p/s///"` ) ;;
+			    r) xy_b5=( `echo "${xy_b5[*]}" | sed "/$p/s///"` ) ;;
+			    c) xy_b6=( `echo "${xy_b6[*]}" | sed "/$p/s///"` ) ;;
+			    p) # xy_b7=( `echo "${xy_b7[*]}" | sed "/$p/s///"` ) ;;
+			      tput rc; tput ed; continue; ;;
+			    *)tput rc; tput ed; continue;
+			    ;;
+			esac
+			## ==== 
+
+			# 记入新的坐标和棋子
+			xy_b7=( ${xy_b7[*]} "$p" ); pos[p]='p';
+		  ;;
+		*)tput rc; tput ed; continue; ;;
+	  esac
+	  if [ -n "$B7" ]; then ST4="$B7"; else ST4="$S4"; fi;
+	  ;;
+	
+	*)tput rc; tput ed;
+	  continue ;;
+      esac
+      # ============
+      
+      ;;
+	
+	*)tput rc; tput ed;     continue; 
+	  ;;
+    esac
+    # === /3
+
+    ;;
+
+    *)tput rc; tput ed;
+     continue; 
+     ;;
+  esac
+  
+  ## ======
+
+  ## 更新棋子布局图
+  case "$p" in
+
+      [1-9]9)
+row9=( ${pos[19]} ${pos[29]} ${pos[39]} ${pos[49]} ${pos[59]} ${pos[69]} ${pos[79]} ${pos[89]} ${pos[99]} )
+	  ;;
+
+      [1-9]8)
+row8=( ${pos[18]} ${pos[28]} ${pos[38]} ${pos[48]} ${pos[58]} ${pos[68]} ${pos[78]} ${pos[88]} ${pos[98]} )
+	  ;;
+
+      [1-9]7)
+row7=( ${pos[17]} ${pos[27]} ${pos[37]} ${pos[47]} ${pos[57]} ${pos[67]} ${pos[77]} ${pos[87]} ${pos[97]} )
+	  ;;
+      [1-9]6)
+row6=( ${pos[16]} ${pos[26]} ${pos[36]} ${pos[46]} ${pos[56]} ${pos[66]} ${pos[76]} ${pos[86]} ${pos[96]} )
+	  ;;
+      [1-9]5)
+row5=( ${pos[15]} ${pos[25]} ${pos[35]} ${pos[45]} ${pos[55]} ${pos[65]} ${pos[75]} ${pos[85]} ${pos[95]} )
+	  ;;
+      
+      [1-9]4)
+row4=( ${pos[14]} ${pos[24]} ${pos[34]} ${pos[44]} ${pos[54]} ${pos[64]} ${pos[74]} ${pos[84]} ${pos[94]} )
+	  ;;
+      [1-9]3)
+row3=( ${pos[13]} ${pos[23]} ${pos[33]} ${pos[43]} ${pos[53]} ${pos[63]} ${pos[73]} ${pos[83]} ${pos[93]} )
+	  ;;
+
+      [1-9]2)
+row2=( ${pos[12]} ${pos[22]} ${pos[32]} ${pos[42]} ${pos[52]} ${pos[62]} ${pos[72]} ${pos[82]} ${pos[92]} )
+	  ;;
+
+       [1-9]1)
+row1=( ${pos[11]} ${pos[21]} ${pos[31]} ${pos[41]} ${pos[51]} ${pos[61]} ${pos[71]} ${pos[81]} ${pos[91]} )
+	  ;;
+
+       [1-9]0)
+row0=( ${pos[10]} ${pos[20]} ${pos[30]} ${pos[40]} ${pos[50]} ${pos[60]} ${pos[70]} ${pos[80]} ${pos[90]} )	   
+
+	  ;;
+      
+      *):
+      ;;
+  esac
+
+   ## TAG 3540: [摆棋模式]下，显示棋盘示意图的同时，在底部显示各棋子数量 
+   SHOW_COUNT=1
+    _show_fen_pos
+  
+ #
+ tput rc; tput ed;
+
+ #
+ #DEBUG=1
+ if [ "$DEBUG" = 1 ]; then
+ echo "  TAG 3540: $R1${#xy_r1[*]},$R2${#xy_r2[*]},$R3${#xy_r3[*]},$R4${#xy_r4[*]}, $R5${#xy_r5[*]},$R6${#xy_r6[*]},$R7${#xy_r7[*]} "
+
+ fi
+unset  DEBUG
+ #
+ 
+  echo -n "{${SX1}${S2}${ST3}${ST4}} "
+  tput sc;
+  
+      done
+      ### =======================
+      
+      #exit 0
+      ;;
+  
+  ### TAG 2605： ###
+  ### 其它未知的4位字符功能代码，一律自动清除，等待重新输入
+ *)
+  tput rc; tput ed; continue; 
+    ;;
+esac
+
+## T1640:
+## 以后功能扩展后, 可能其它的操作代码,也需要随时更新索引序号文件
+## PGN_INDEX, FEN_INDEX
+
+# let "PGN_NUM += 1"
+    #echo -n "$PGN_NUM" > "$PGN_INDEX"
+
+done
+
+
+### 所有 option 完成后，执行额外的功能
+
+### 显示生成的 PGN 对局/棋谱文件 (主要用于调试)
+### TAG1714: PGN_VIEWMODE:
+#  =0: 只显示最前和最后各10行(不带行号)；
+#  =1: 与=0类似, 但同时显示行号(用grep -n 实现)
+#PGN_VIEWMODE=1
+
+if [ "$SHOW_PGN" = 1 ]; then
+    ## 如果是在图形界面, 用编辑器打开 PGN 文件.
+    #  如果是在控制台 (tty1-tty6), 只显示最前面和最后面的部分行数
+    #  (显示的总行数之和小于或者等于控制台最大能显示的行数)
+    if [ "$DISPLAY" != '' ]; then
+	xdg-open "$PGN_FILE" &
+	wait # TAG 3208: 确保在程序退出前， PGN 文件已经被成功打开。
+    else
+	echo "* 保存到 PGN 文件: $PGN_FILE"
+	#sleep 3
+	#echo " ----------------- "
+	if [ "$PGN_VIEWMODE" = 0 ]; then
+	  head "$PGN_FILE"; echo; tail "$PGN_FILE"
+	else
+	    ### 至少要保留两行备用:
+	    # 屏幕最顶上1行显示文件名, 最后1行留给用户输入新指令
+	    MAX_LINES=`tput lines`
+	    let "MAX_LINES = MAX_LINES - 1"
+	    
+	    FILE_LINES=`wc -l "$PGN_FILE" | cut -d' ' -f1`
+
+	    if [[ "$FILE_LINES" -lt "$MAX_LINES" ]]; then
+		grep -n . --color=auto "$PGN_FILE"
+	    else
+		let "SHOW_HEAD_LINES = `tput lines` / 2 - 1" 
+		let "SHOW_TAIL_LINES = `tput lines` / 2 - 1" 
+	    
+	    # grep -n . --color=auto | head -10
+	    head -n "$SHOW_HEAD_LINES" "$PGN_FILE" | grep -n . --color=auto
+	    #echo;
+	    grep -n . --color=auto "$PGN_FILE" | tail -n "$SHOW_TAIL_LINES";	    
+	    fi	    
+
+	fi
+	
+ 
+	fi
+
+  fi
+
+  ## T1231: 
+
+
+### 暂停1秒 !!! 非常重要!!! 
+## 如果在图形界面, 以 cchess.desktop 的快捷方式运行, 用来查看生成的 PGN 文件.
+## 如果不作短暂停顿, PGN 文件还没来得及打开, 整个进程就被提前关闭退出了.
+## 注：已经改用 wait 命令等待后台运行的进程,不再需要 "sleep 1"。见 TAG 3208
+case "$DISPLAY" in
+    :[0-9].[0-9]*)
+	#sleep 1
+	;;
+esac
+
+exit 0;
