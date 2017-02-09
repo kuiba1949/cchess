@@ -2,7 +2,7 @@
 # /bin/bash #-x
 #set -e
 
-# 2017-2-03
+# 2017-2-09
 # original filename: cchess-edit
 ## cchess: a PGN generator, which run in command line only
 
@@ -12,7 +12,7 @@
 
 ### 1. 程序版本, 日志, 调试, 语言环境相关 ###
 APPNAME="cchess-edit"
-VERSION="0.3"
+VERSION="0.4"
 
 # 1.1 是否记录日志
 KEEP_LOG=0
@@ -89,9 +89,9 @@ FEN_INDEX="$FEN_DIR/.fen_index"
 
 ### 3.1 棋子走法/让子模式/（以及暂未开发的摆子模式）相关 ###
 
-## MODE_MISS: 是否有过让子操作。
-# 1: 有让子；0或者空：未让子（即标准开局）；2：摆子模式
-
+## MODE (取代原变量 MODE_MISS）: 是否有过让子操作。
+# 3: 有让子；0或者空：未让子（即标准开局）；2：摆子模式
+# 1: 暂未使用
 #
 declare -i STEP=1 LOOP=1
 
@@ -99,19 +99,24 @@ declare -i STEP=1 LOOP=1
 TRUN='' 
 
 declare -i PAUSED
-#MISS
 
 declare -a piece_die piece_dxy piece_dstep
+
+
+declare -a psr psb colr colb
+declare -a move someone none xone
+
+# psr[*], psb[*]: Piece of Red/Black 红/黑方棋子名称,
+# colr[*], colb[*]: COL number of Red/Black 红/黑方棋子路数名称,  
+# 见TAG 845。如：
+# psr=( "帥" "仕" "相" "馬" "車" "炮" "兵" )
+# colb=( 1 2 3 4 5 6 7 8 9 )
 
 # TEXT_MOVE
 ## 见定义 D1125: TEXT_MOVE: 每步走法的4个字, 如 车五进一
 
 
 ### 内部参数设置,一般不需要调整
-# 黑方走法的数字格式: 0代表中文全角数字(默认方案,排版对齐效果好);
-# 1: 代表英文半角数字；其它数值: 等同于=0
-#BLACK_MOVE_FORMAT="0"  #参数已失效
-
 
 ## STEP: 红方/黑方任意一方每走一步,计数+1
 ## LOOP: 第几回合: 红,黑双方各走完一步后, 计数+1(实际是黑方走后+1)
@@ -341,8 +346,6 @@ DATE_1D=`date -d "@$DATE_UNIX" +%d`
   fi
 
 }
-
-
 
   
 ### 11: 其它定义及待开发/预设的功能变量 ###
@@ -844,152 +847,73 @@ EOF
   case "$CLANG" in
 
 
-      zh_CN) # 简体中文
-      R1="帅"
-R2="仕"
-R3="相"
-R4="马"
-R5="车"
-R6="炮"
-R7="兵"
+      zh_CN) # TAG 845: 简体中文
 
-B1="将"
-B2="士"
-B3="象"
-B4="$R4"
-B5="$R5"
-B6="$R6"
-B7="卒"
+# psr[*], psb[*]: Piece of Red/Black
+psr=( "帅" "仕" "相" "马" "车" "炮" "兵" )
+psb=( "将" "士" "象" "马" "车" "炮" "卒" )
 
-#
-RED="红"
-BLACK="黑"
+colr=( "一" "二" "三" "四" "五" "六" "七" "八" "九" )
+colb=( "１" "２" "３" "４" "５" "６" "７" "８" "９" )
 
-MISS='无'
-NONE='无子'
+move=( "进" "退" "平" )
+someone=( "黑" "红" "黑方" "红方" )
+none=( "无" "无子" )
 
-#
-R_ONE="一" 
-R_TWO="二" 
-R_THREE="三" 
-R_FOUR="四" 
-R_FIVE="五" 
-R_SIX="六" 
-R_SEVEN="七" 
-R_EIGHT="八" 
-R_NINE="九"
+xone=( "前" "中" "后" "一" "二" "三" "四" "五" )
 
-#
-B_ONE="１" 
-B_TWO="２" 
-B_THREE="３" 
-B_FOUR="４" 
-B_FIVE="５" 
-B_SIX="６" 
-B_SEVEN="７" 
-B_EIGHT="８" 
-B_NINE="９"
-
-# TODO 691: 保留的变量, 后期版本中, 再完成输出代码的优化, 统一使用变量
-FORWARDS="进"
-BACKWARDS="退"
-SIDEWARDS="平"
-
-## TAG 1099:  
-FRONT="前"
-MIDDLE="中"
-BEHIND="后"
-
-# WIN="胜"
-# LOSS="输"
-# DRAW="和"
+## result[0] - result[10]
+result=( "对局结束" "红胜" "黑胜" "和棋" "胜" "输" "和" "黑方认输" "红方认输" "双方议和" "例和" )
 
 ;;
-      zh_TW | zh_HK | zh_SG)# 繁体中文
-R1="帥"
-R2="仕"
-R3="相"
-R4="馬"
-R5="車"
-R6="炮"
-R7="兵"
+      zh_TW | zh_HK | zh_SG | zh*)# 繁体中文
+# psr[*], psb[*]: Piece of Red/Black
+psr=( "帥" "仕" "相" "馬" "車" "炮" "兵" )
+psb=( "將" "士" "象" "馬" "車" "砲" "卒" )
 
-B1="將"
-B2="士"
-B3="象"
-B4="$R4"
-B5="$R5"
-B6="砲"
-B7="卒"
+colr=( "一" "二" "三" "四" "五" "六" "七" "八" "九" )
+colb=( "１" "２" "３" "４" "５" "６" "７" "８" "９" )
 
 #
-FORWARDS="進"
-BACKWARDS="退"
-SIDEWARDS="平"
+someone=( "黑" "紅" "黑方" "紅方" )
+move=( "進" "退" "平" )
+none=( "無" "無子" )
+
+xone=( "前" "中" "後" "一" "二" "三" "四" "五" )
+
+## result[0] - result[10]
+result=( "對局結束" "红勝" "黑勝" "和棋"  "勝" "輸" "和" "黑方認輸" "紅方認輸" "雙方議和" "例和" )
 
 #
-FRONT="前"
-MIDDLE="中"
-BEHIND="后"
-
-#
-RED="红"
-BLACK="黑"
-
-MISS="无"
-NONE='无子'
-#
-#
-R_ONE="一" 
-R_TWO="二" 
-R_THREE="三" 
-R_FOUR="四" 
-R_FIVE="五" 
-R_SIX="六" 
-R_SEVEN="七" 
-R_EIGHT="八" 
-R_NINE="九"
-
-#
-B_ONE="１" 
-B_TWO="２" 
-B_THREE="３" 
-B_FOUR="４" 
-B_FIVE="５" 
-B_SIX="６" 
-B_SEVEN="７" 
-B_EIGHT="８" 
-B_NINE="９"
 
 ;;
       
       *) # 待开发的功能, 仅适用于外国用户显示为棋子为单个大写/小写字母代码
 	  ## 大写字母代表红方,小写代表黑方.当前使用英文字母方案
-      R1="K"
-R2="A"
-R3="B"
-R4="N"
-R5="R"
-R6="C"
-R7="P"
+# psr[*], psb[*]: Piece of Red/Black
+psr=( K A B N R C P )
+psb=( k a b n r c p )
 
-B1="k"
-B2="a"
-B3="b"
-B4="n"
-B5="r"
-B6="c"
-B7="p"
+#colr=( "一" "二" "三" "四" "五" "六" "七" "八" "九" )
+#colb=( "１" "２" "３" "４" "５" "６" "７" "８" "９" )
 
-FORWARDS="+"
-BACKWARDS="-"
-SIDEWARDS="."
+move=( '+' '-' '.' )
+# FORWARDS="+"
+# BACKWARDS="-"
+# SIDEWARDS="."
 
-RED="R"    #"红"
-BLACK="B"   #"黑"
+someone=( B R Black Red )
 
-MISS="/"    #"让"
-NONE='__'   #'无子'
+none=( '/' '__' )
+# MISS="/"    #"让"
+# NONE='__'   #'无子'
+
+#xone=( "前" "中" "後" "一" "二" "三" "四" "五" )
+
+## result[0] - result[10]
+#result=( "對局結束" "红勝" "黑勝" "和棋"  "勝" "輸" "和" "黑方認輸" "紅方認輸" "雙方議和" "例和" )
+
+result=( "GameOver" "RedWin" "BlackWin" "Draw" "Win" "Loss" "Draw" "BlackAbort" "RedAbort" "AgreeDraw" "FactDraw" )
 ;;
   
   esac
@@ -1032,11 +956,15 @@ NONE='__'   #'无子'
 		#    字符未清除干净，在相应的行尾造成不相干的文字残留。
 		P1=". "
 
+		### 最顶层加一行空行，以解决红方走棋换行后，最顶层黑方数字路数丢失
+		#   的缺陷(连续输入33个空格)
+		ROW_BLK="                                 " 
+
 		### 棋盘上下框线
 		ROW_HR="  ==========================   "
 		
 		### row_t of Top, 因为一个中文汉字占用两个字符位置，
-		#   所以数字之间要有2个空格
+		#   所以数字之间要加2个空格
 		ROW_TT="  1  2  3  4  5  6  7  8  9   "
 
 		### row_t of Bottom
@@ -1050,6 +978,11 @@ NONE='__'   #'无子'
 		#let "X0 = `tput cols` - 25"
 		let "X0 = `tput cols` - 34"		
 		P1='.'
+
+		### 最顶层加一行空行，以解决红方走棋换行后，最顶层黑方数字路数丢失
+		#   的缺陷(连续输入33个空格)
+		ROW_BLK="                                 " 
+
 		ROW_HR="  =================   " 
 		### row_t of Top
 		ROW_TT="  1 2 3 4 5 6 7 8 9   "
@@ -1062,8 +995,12 @@ NONE='__'   #'无子'
 		;;
 	esac
 
+## 显示棋盘顶部的空行
+	tput cup "$Y0" "$X0" ; #tput ed;
+ 	echo "   ${ROW_BLK}  "
 	
 ## 显示棋盘顶部的线路标记（1-9）和棋盘框线
+	let "Y0 += 1";
 	tput cup "$Y0" "$X0" ; #tput ed;
  	echo "   ${ROW_TT}  "
 	
@@ -1080,19 +1017,19 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
-	b | e)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
-	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
-	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	b | e)ta="${psb[2]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	a)ta="${psb[1]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	k)ta="${psb[0]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	## 红方的进攻棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
-	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="${psr[6]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 ##  黑卒，红仕/红相/红将：
 #   都不可能出现在这条横线（除非翻转棋盘），忽略。
 
@@ -1110,19 +1047,19 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
-#	b)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
-	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
-	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	a)ta="${psb[1]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	k)ta="${psb[0]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	## 红方的进攻棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
-	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="${psr[6]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 ##  黑卒，红仕/红相/红将：
 #   都不可能出现在这条横线（除非翻转棋盘），忽略。
 
@@ -1141,19 +1078,19 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
-	b | e)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
-	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
-	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	b | e)ta="${psb[2]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	a)ta="${psb[1]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	k)ta="${psb[0]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	## 红方的进攻棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
-	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="${psr[6]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 ##  黑卒，红仕/红相/红将：
 #   都不可能出现在这条横线（除非翻转棋盘），忽略。
 
@@ -1172,21 +1109,19 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
-#	b)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
-#	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
-#	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="${psb[6]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	## 红方的进攻棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
-	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="${psr[6]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 ##  红仕/红相/红将：
 #   都不可能出现在这条横线（除非翻转棋盘），忽略。
 
@@ -1205,21 +1140,20 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
-	b)ta="$B3"; echo -en "\e[1;32m$ta\e[0m " ;;
-#	a)ta="$B2"; echo -en "\e[1;32m$ta\e[0m " ;;
-#	k)ta="$B1"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	b)ta="${psb[2]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="${psb[6]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	## 红方的进攻棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
-	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="${psr[6]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 ##  红仕/红相/红将：
 #   都不可能出现在这条横线（除非翻转棋盘），忽略。
 
@@ -1238,22 +1172,20 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
 
 	## 红方棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
-#	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
-#	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	B | E)ta="${psr[2]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
-	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="${psr[6]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
-	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="${psb[6]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
     esac	
@@ -1269,23 +1201,20 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
 
 	## 红方棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 	
-#	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
-#	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
-#	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
 
-	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	P)ta="${psr[6]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
-	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="${psb[6]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
     esac	
@@ -1301,21 +1230,21 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
 
 	## 红方棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
-	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
-	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	B | E)ta="${psr[2]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	A)ta="${psr[1]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	K)ta="${psr[0]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
-#	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
-	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="${psb[6]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
     esac	
@@ -1333,21 +1262,20 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
 
 	## 红方棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-#	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
-	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
-	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
-#	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	A)ta="${psr[1]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	K)ta="${psr[0]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
-	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="${psb[6]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
     esac	
@@ -1364,21 +1292,21 @@ NONE='__'   #'无子'
 	1 | '')ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
 
 	## 红方棋子，用红色(31m)表示
-	R)ta="$R5"; echo -en "\e[1;31m$ta\e[0m " ;;
-	N | H)ta="$R4"; echo -en "\e[1;31m$ta\e[0m " ;;
-	B | E)ta="$R3"; echo -en "\e[1;31m$ta\e[0m " ;;
-	A)ta="$R2"; echo -en "\e[1;31m$ta\e[0m " ;;
-	K)ta="$R1"; echo -en "\e[1;31m$ta\e[0m " ;;
+	R)ta="${psr[4]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	N | H)ta="${psr[3]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	B | E)ta="${psr[2]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	A)ta="${psr[1]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+	K)ta="${psr[0]}"; echo -en "\e[1;31m$ta\e[0m " ;;
 
-	C)ta="$R6"; echo -en "\e[1;31m$ta\e[0m " ;;
-#	P)ta="$R7"; echo -en "\e[1;31m$ta\e[0m " ;;
+	C)ta="${psr[5]}"; echo -en "\e[1;31m$ta\e[0m " ;;
+
 
 	# 黑方棋子，用绿色(32m)表示是黑方
-	r)ta="$B5"; echo -en "\e[1;32m$ta\e[0m " ;;
-	n | h)ta="$B4"; echo -en "\e[1;32m$ta\e[0m " ;;
+	r)ta="${psb[4]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	n | h)ta="${psb[3]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
-	c)ta="$B6"; echo -en "\e[1;32m$ta\e[0m " ;;
-	p)ta="$B7"; echo -en "\e[1;32m$ta\e[0m " ;;
+	c)ta="${psb[5]}"; echo -en "\e[1;32m$ta\e[0m " ;;
+	p)ta="${psb[6]}"; echo -en "\e[1;32m$ta\e[0m " ;;
 
 	#
 	*)ta="$P1"; echo -en "\e[1;31m$ta\e[0m " ;;
@@ -1402,9 +1330,9 @@ NONE='__'   #'无子'
     
     if [ "$SHOW_COUNT" = 1 ]; then
 	let "Y0 += 1"; tput cup "$Y0" "$X0"	
-echo "[$RED] $R1${#xy_r1[*]} $R2${#xy_r2[*]} $R3${#xy_r3[*]}  $R4${#xy_r4[*]} $R5${#xy_r5[*]} $R6${#xy_r6[*]} $R7${#xy_r7[*]} "
+echo "[${someone[1]}] ${psr[0]}${#xy_r1[*]} ${psr[1]}${#xy_r2[*]} ${psr[2]}${#xy_r3[*]}  ${psr[3]}${#xy_r4[*]} ${psr[4]}${#xy_r5[*]} ${psr[5]}${#xy_r6[*]} ${psr[6]}${#xy_r7[*]} "
 	let "Y0 += 1"; tput cup "$Y0" "$X0"	
-echo "[$BLACK] $B1${#xy_b1[*]} $B2${#xy_b2[*]} $B3${#xy_b3[*]}  $B4${#xy_b4[*]} $B5${#xy_b5[*]} $B6${#xy_b6[*]} $B7${#xy_b7[*]} "   
+echo "[${someone[0]}] ${psb[0]}${#xy_b1[*]} ${psb[1]}${#xy_b2[*]} ${psb[2]}${#xy_b3[*]}  ${psb[3]}${#xy_b4[*]} ${psb[4]}${#xy_b5[*]} ${psb[5]}${#xy_b6[*]} ${psb[6]}${#xy_b7[*]} "   
 fi  
     # ===================
     
@@ -1489,10 +1417,6 @@ done
 
 ###---------------
 
-
-
-
-
 ### check and auto mkdir app configure dir
 if [ ! -d "$CFG_DIR/" ]; then
   mkdir -p "$CFG_DIR/";
@@ -1510,7 +1434,6 @@ fi
 
 ### TODO 540: 配置文件 cchess.cfg 暂未正式启用. 功能待开发
 # 创建默认配置文件
-
 
 
 if [ "$ENABLE_CFG" = 1 ]; then
@@ -1739,13 +1662,13 @@ fi
       ## ------------
       case "$S1" in
 
-	1)if [ -n "$R1" ]; then ST1="$R1"; else ST1="$S1"; fi; ;;
-	2)if [ -n "$R2" ]; then ST1="$R2"; else ST1="$S1"; fi; ;;
-	3)if [ -n "$R3" ]; then ST1="$R3"; else ST1="$S1"; fi; ;;
-	4)if [ -n "$R4" ]; then ST1="$R4"; else ST1="$S1"; fi; ;;
-	5)if [ -n "$R5" ]; then ST1="$R5"; else ST1="$S1"; fi; ;;
-	6)if [ -n "$R6" ]; then ST1="$R6"; else ST1="$S1"; fi; ;;
-	7)if [ -n "$R7" ]; then ST1="$R7"; else ST1="$S1"; fi; ;;
+	1)if [ -n "${psr[0]}" ]; then ST1="${psr[0]}"; else ST1="$S1"; fi; ;;
+	2)if [ -n "${psr[1]}" ]; then ST1="${psr[1]}"; else ST1="$S1"; fi; ;;
+	3)if [ -n "${psr[2]}" ]; then ST1="${psr[2]}"; else ST1="$S1"; fi; ;;
+	4)if [ -n "${psr[3]}" ]; then ST1="${psr[3]}"; else ST1="$S1"; fi; ;;
+	5)if [ -n "${psr[4]}" ]; then ST1="${psr[4]}"; else ST1="$S1"; fi; ;;
+	6)if [ -n "${psr[5]}" ]; then ST1="${psr[5]}"; else ST1="$S1"; fi; ;;
+	7)if [ -n "${psr[6]}" ]; then ST1="${psr[6]}"; else ST1="$S1"; fi; ;;
 	
 	*)tput rc; tput ed;
 	  continue ;;	
@@ -1762,13 +1685,13 @@ fi
 
      ## ------------
       case "$S1" in
-	1)if [ -n "$B1" ]; then ST1="$B1"; else ST1="$S1"; fi; ;;
-	2)if [ -n "$B2" ]; then ST1="$B2"; else ST1="$S1"; fi; ;;
-	3)if [ -n "$B3" ]; then ST1="$B3"; else ST1="$S1"; fi; ;;
-	4)if [ -n "$B4" ]; then ST1="$B4"; else ST1="$S1"; fi; ;;
-	5)if [ -n "$B5" ]; then ST1="$B5"; else ST1="$S1"; fi; ;;
-	6)if [ -n "$B6" ]; then ST1="$B6"; else ST1="$S1"; fi; ;;
-	7)if [ -n "$B7" ]; then ST1="$B7"; else ST1="$S1"; fi; ;;
+	1)if [ -n "${psb[0]}" ]; then ST1="${psb[0]}"; else ST1="$S1"; fi; ;;
+	2)if [ -n "${psb[1]}" ]; then ST1="${psb[1]}"; else ST1="$S1"; fi; ;;
+	3)if [ -n "${psb[2]}" ]; then ST1="${psb[2]}"; else ST1="$S1"; fi; ;;
+	4)if [ -n "${psb[3]}" ]; then ST1="${psb[3]}"; else ST1="$S1"; fi; ;;
+	5)if [ -n "${psb[4]}" ]; then ST1="${psb[4]}"; else ST1="$S1"; fi; ;;
+	6)if [ -n "${psb[5]}" ]; then ST1="${psb[5]}"; else ST1="$S1"; fi; ;;
+	7)if [ -n "${psb[6]}" ]; then ST1="${psb[6]}"; else ST1="$S1"; fi; ;;
 	
 	*)tput rc; tput ed;
 	  continue ;;
@@ -1792,15 +1715,15 @@ fi
 	
      	## ------------
         case "$S2" in
-	1)if [ -n "$R_ONE" ]; then ST2="$R_ONE"; else ST2="$S2"; fi; ;;
-	2)if [ -n "$R_TWO" ]; then ST2="$R_TWO"; else ST2="$S2"; fi; ;;
-	3)if [ -n "$R_THREE" ]; then ST2="$R_THREE"; else ST2="$S2"; fi; ;;
-	4)if [ -n "$R_FOUR" ]; then ST2="$R_FOUR"; else ST2="$S2"; fi; ;;
-	5)if [ -n "$R_FIVE" ]; then ST2="$R_FIVE"; else ST2="$S2"; fi; ;;
-	6)if [ -n "$R_SIX" ]; then ST2="$R_SIX"; else ST2="$S2"; fi; ;;
-	7)if [ -n "$R_SEVEN" ]; then ST2="$R_SEVEN"; else ST2="$S2"; fi; ;;
-	8)if [ -n "$R_EIGHT" ]; then ST2="$R_EIGHT"; else ST2="$S2"; fi; ;;
-	9)if [ -n "$R_NINE" ]; then ST2="$R_NINE"; else ST2="$S2"; fi; ;;
+	1)if [ -n "${colr[0]}" ]; then ST2="${colr[0]}"; else ST2="$S2"; fi; ;;
+	2)if [ -n "${colr[1]}" ]; then ST2="${colr[1]}"; else ST2="$S2"; fi; ;;
+	3)if [ -n "${colr[2]}" ]; then ST2="${colr[2]}"; else ST2="$S2"; fi; ;;
+	4)if [ -n "${colr[3]}" ]; then ST2="${colr[3]}"; else ST2="$S2"; fi; ;;
+	5)if [ -n "${colr[4]}" ]; then ST2="${colr[4]}"; else ST2="$S2"; fi; ;;
+	6)if [ -n "${colr[5]}" ]; then ST2="${colr[5]}"; else ST2="$S2"; fi; ;;
+	7)if [ -n "${colr[6]}" ]; then ST2="${colr[6]}"; else ST2="$S2"; fi; ;;
+	8)if [ -n "${colr[7]}" ]; then ST2="${colr[7]}"; else ST2="$S2"; fi; ;;
+	9)if [ -n "${colr[8]}" ]; then ST2="${colr[8]}"; else ST2="$S2"; fi; ;;
 
 	*) # 其它无效的竖线代码，自动清除，等待重新输入
 	tput rc; tput ed; continue;
@@ -1812,15 +1735,15 @@ fi
 	#黑方走法
      	## ------------
         case "$S2" in
-	1)if [ -n "$B_ONE" ]; then ST2="$B_ONE"; else ST2="$S2"; fi; ;;
-	2)if [ -n "$B_TWO" ]; then ST2="$B_TWO"; else ST2="$S2"; fi; ;;
-	3)if [ -n "$B_THREE" ]; then ST2="$B_THREE"; else ST2="$S2"; fi; ;;
-	4)if [ -n "$B_FOUR" ]; then ST2="$B_FOUR"; else ST2="$S2"; fi; ;;
-	5)if [ -n "$B_FIVE" ]; then ST2="$B_FIVE"; else ST2="$S2"; fi; ;;
-	6)if [ -n "$B_SIX" ]; then ST2="$B_SIX"; else ST2="$S2"; fi; ;;
-	7)if [ -n "$B_SEVEN" ]; then ST2="$B_SEVEN"; else ST2="$S2"; fi; ;;
-	8)if [ -n "$B_EIGHT" ]; then ST2="$B_EIGHT"; else ST2="$S2"; fi; ;;
-	9)if [ -n "$B_NINE" ]; then ST2="$B_NINE"; else ST2="$S2"; fi; ;;
+	1)if [ -n "${colb[0]}" ]; then ST2="${colb[0]}"; else ST2="$S2"; fi; ;;
+	2)if [ -n "${colb[1]}" ]; then ST2="${colb[1]}"; else ST2="$S2"; fi; ;;
+	3)if [ -n "${colb[2]}" ]; then ST2="${colb[2]}"; else ST2="$S2"; fi; ;;
+	4)if [ -n "${colb[3]}" ]; then ST2="${colb[3]}"; else ST2="$S2"; fi; ;;
+	5)if [ -n "${colb[4]}" ]; then ST2="${colb[4]}"; else ST2="$S2"; fi; ;;
+	6)if [ -n "${colb[5]}" ]; then ST2="${colb[5]}"; else ST2="$S2"; fi; ;;
+	7)if [ -n "${colb[6]}" ]; then ST2="${colb[6]}"; else ST2="$S2"; fi; ;;
+	8)if [ -n "${colb[7]}" ]; then ST2="${colb[7]}"; else ST2="$S2"; fi; ;;
+	9)if [ -n "${colb[8]}" ]; then ST2="${colb[8]}"; else ST2="$S2"; fi; ;;
 
 	*) # 其它无效的竖线代码，自动清除，等待重新输入
 	tput rc; tput ed; continue;
@@ -1842,15 +1765,15 @@ fi
 
 	## ------------
         case "$S2" in
-	[aA])if [ -n "$R_ONE" ]; then ST2="$R_ONE"; else ST2="$S2"; fi; ;;
-	[bB])if [ -n "$R_TWO" ]; then ST2="$R_TWO"; else ST2="$S2"; fi; ;;
-	[cC])if [ -n "$R_THREE" ]; then ST2="$R_THREE"; else ST2="$S2"; fi; ;;
-	[dD])if [ -n "$R_FOUR" ]; then ST2="$R_FOUR"; else ST2="$S2"; fi; ;;
-	[eE])if [ -n "$R_FIVE" ]; then ST2="$R_FIVE"; else ST2="$S2"; fi; ;;
+	\+)if [ -n "${xone[0]}" ]; then ST2="${xone[0]}"; else ST2="$S2"; fi; ;;
+	\-)if [ -n "${xone[1]}" ]; then ST2="${xone[1]}"; else ST2="$S2"; fi; ;;
+	\.)if [ -n "${xone[2]}" ]; then ST2="${xone[2]}"; else ST2="$S2"; fi; ;;
 
-	\+)if [ -n "$FRONT" ]; then ST2="$FRONT"; else ST2="$S2"; fi; ;;
-	\-)if [ -n "$MIDDLE" ]; then ST2="$MIDDLE"; else ST2="$S2"; fi; ;;
-	\.)if [ -n "$BEHIND" ]; then ST2="$BEHIND"; else ST2="$S2"; fi; ;;
+	[aA])if [ -n "${xone[3]}" ]; then ST2="${xone[3]}"; else ST2="$S2"; fi; ;;
+	[bB])if [ -n "${xone[4]}" ]; then ST2="${xone[4]}"; else ST2="$S2"; fi; ;;
+	[cC])if [ -n "${xone[5]}" ]; then ST2="${xone[5]}"; else ST2="$S2"; fi; ;;
+	[dD])if [ -n "${xone[6]}" ]; then ST2="${xone[6]}"; else ST2="$S2"; fi; ;;
+	[eE])if [ -n "${xone[7]}" ]; then ST2="${xone[7]}"; else ST2="$S2"; fi; ;;
 
 	*) # 其它无效的 “前中后/一二三四五” 位置代码，自动清除，等待重新输入
 	tput rc; tput ed; continue;
@@ -1876,16 +1799,16 @@ fi
     ### 走棋代码第3位
 
     case "$S3" in
-	## 如果 FORWARDS (前), BACKWARDS(退), SIDEWARDS(平)
+	## 如果 forwards (前), backwards(退), sidewards(平)
 	## 没有定义对应的文字或字符, 则使用默认的 +-. 代码代替
-	   \+)if [[ -n "$FORWARDS" ]]; then ST3="$FORWARDS";
+	   \+)if [[ -n "${move[0]}" ]]; then ST3="${move[0]}";
 	     else ST3="$S3";
 	     fi  ;;
-	   \-)if [[ -n "$BACKWARDS" ]]; then ST3="$BACKWARDS";
+	   \-)if [[ -n "${move[1]}" ]]; then ST3="${move[1]}";
 	     else ST3="$S3";
 	     fi  ;;
 	   
-	   \.)if [[ -n "$SIDEWARDS" ]]; then ST3="$SIDEWARDS";
+	   \.)if [[ -n "${move[2]}" ]]; then ST3="${move[2]}";
 	     else ST3="$S3";
 	     fi  ;;
 
@@ -1901,15 +1824,15 @@ fi
 	    if [ "$TRUN" = 1 ] || [ "$TRUN" = '' ]; then #红方走法
      	## ------------
         case "$S4" in
-	1)if [ -n "$R_ONE" ]; then ST4="$R_ONE"; else ST4="$S4"; fi; ;;
-	2)if [ -n "$R_TWO" ]; then ST4="$R_TWO"; else ST4="$S4"; fi; ;;
-	3)if [ -n "$R_THREE" ]; then ST4="$R_THREE"; else ST4="$S4"; fi; ;;
-	4)if [ -n "$R_FOUR" ]; then ST4="$R_FOUR"; else ST4="$S4"; fi; ;;
-	5)if [ -n "$R_FIVE" ]; then ST4="$R_FIVE"; else ST4="$S4"; fi; ;;
-	6)if [ -n "$R_SIX" ]; then ST4="$R_SIX"; else ST4="$S4"; fi; ;;
-	7)if [ -n "$R_SEVEN" ]; then ST4="$R_SEVEN"; else ST4="$S4"; fi; ;;
-	8)if [ -n "$R_EIGHT" ]; then ST4="$R_EIGHT"; else ST4="$S4"; fi; ;;
-	9)if [ -n "$R_NINE" ]; then ST4="$R_NINE"; else ST4="$S4"; fi; ;;
+	1)if [ -n "${colr[0]}" ]; then ST4="${colr[0]}"; else ST4="$S4"; fi; ;;
+	2)if [ -n "${colr[1]}" ]; then ST4="${colr[1]}"; else ST4="$S4"; fi; ;;
+	3)if [ -n "${colr[2]}" ]; then ST4="${colr[2]}"; else ST4="$S4"; fi; ;;
+	4)if [ -n "${colr[3]}" ]; then ST4="${colr[3]}"; else ST4="$S4"; fi; ;;
+	5)if [ -n "${colr[4]}" ]; then ST4="${colr[4]}"; else ST4="$S4"; fi; ;;
+	6)if [ -n "${colr[5]}" ]; then ST4="${colr[5]}"; else ST4="$S4"; fi; ;;
+	7)if [ -n "${colr[6]}" ]; then ST4="${colr[6]}"; else ST4="$S4"; fi; ;;
+	8)if [ -n "${colr[7]}" ]; then ST4="${colr[7]}"; else ST4="$S4"; fi; ;;
+	9)if [ -n "${colr[8]}" ]; then ST4="${colr[8]}"; else ST4="$S4"; fi; ;;
 
 	*) # 其它无效的竖线代码，自动清除，等待重新输入
 	tput rc; tput ed; continue;
@@ -1922,15 +1845,15 @@ fi
      	## ------------
         case "$S4" in
 
-	1)if [ -n "$B_ONE" ]; then ST4="$B_ONE"; else ST4="$S4"; fi; ;;
-	2)if [ -n "$B_TWO" ]; then ST4="$B_TWO"; else ST4="$S4"; fi; ;;
-	3)if [ -n "$B_THREE" ]; then ST4="$B_THREE"; else ST4="$S4"; fi; ;;
-	4)if [ -n "$B_FOUR" ]; then ST4="$B_FOUR"; else ST4="$S4"; fi; ;;
-	5)if [ -n "$B_FIVE" ]; then ST4="$B_FIVE"; else ST4="$S4"; fi; ;;
-	6)if [ -n "$B_SIX" ]; then ST4="$B_SIX"; else ST4="$S4"; fi; ;;
-	7)if [ -n "$B_SEVEN" ]; then ST4="$B_SEVEN"; else ST4="$S4"; fi; ;;
-	8)if [ -n "$B_EIGHT" ]; then ST4="$B_EIGHT"; else ST4="$S4"; fi; ;;
-	9)if [ -n "$B_NINE" ]; then ST4="$B_NINE"; else ST4="$S4"; fi; ;;
+	1)if [ -n "${colb[0]}" ]; then ST4="${colb[0]}"; else ST4="$S4"; fi; ;;
+	2)if [ -n "${colb[1]}" ]; then ST4="${colb[1]}"; else ST4="$S4"; fi; ;;
+	3)if [ -n "${colb[2]}" ]; then ST4="${colb[2]}"; else ST4="$S4"; fi; ;;
+	4)if [ -n "${colb[3]}" ]; then ST4="${colb[3]}"; else ST4="$S4"; fi; ;;
+	5)if [ -n "${colb[4]}" ]; then ST4="${colb[4]}"; else ST4="$S4"; fi; ;;
+	6)if [ -n "${colb[5]}" ]; then ST4="${colb[5]}"; else ST4="$S4"; fi; ;;
+	7)if [ -n "${colb[6]}" ]; then ST4="${colb[6]}"; else ST4="$S4"; fi; ;;
+	8)if [ -n "${colb[7]}" ]; then ST4="${colb[7]}"; else ST4="$S4"; fi; ;;
+	9)if [ -n "${colb[8]}" ]; then ST4="${colb[8]}"; else ST4="$S4"; fi; ;;
 
 	*) # 其它无效的竖线代码，自动清除，等待重新输入
 	tput rc; tput ed; continue;
@@ -2245,51 +2168,53 @@ fi
       unset TEXT_RESULT 
       
       case "$STRING" in
-	  \*\*\*\*)STR_RESULT="*"; TEXT_RESULT="{对局结束}"
+	  \*\*\*\*) # {对局结束}
+		STR_RESULT="*"; TEXT_RESULT="{${result[0]}}" 
      	    tput rc; tput ed;
 	    echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
 		   ;;
-	  \*\*++)STR_RESULT="1-0"; TEXT_RESULT="{红胜}" 
+	  \*\*++)  # {红胜}
+		STR_RESULT="1-0"; TEXT_RESULT="{${result[1]}}"
      	    tput rc; tput ed;
 	    echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
 	    ;;
 	    
-	    \*\*--)STR_RESULT="0-1"; TEXT_RESULT="{黑胜}" 
+	    \*\*--) # {黑胜}
+		STR_RESULT="0-1"; TEXT_RESULT="{${result[2]}}" 
 	     tput rc; tput ed;
 	     echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
 		    ;;
 
-	    ### T1496: 和棋
-	    \*\*..)STR_RESULT="1/2-1/2"; TEXT_RESULT="{和棋}"
+	    ### T2200: {和棋}
+	    \*\*..)STR_RESULT="1/2-1/2"; TEXT_RESULT="{${result[3]}}"
 	      tput rc; tput ed;
 	      echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
 	      ;;
 
-	    00..)STR_RESULT="1/2-1/2"; TEXT_RESULT="{双方议和}"
+	    00..) # {双方议和}
+		STR_RESULT="1/2-1/2"; TEXT_RESULT="{${result[9]}}"
 	      tput rc; tput ed;
 	      echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
 	      ;;
 	    
-	    ..00)STR_RESULT="1/2-1/2"; TEXT_RESULT="{例和}"
+	    ..00) # {例和}
+		STR_RESULT="1/2-1/2"; TEXT_RESULT="{${result[10]}}"
 	      tput rc; tput ed;
 	      echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
 	      ;;
 
 	    ## 一方自动认输
-	    0000)if [ "$TRUN" = 0 ]; then
-		     STR_RESULT="1-0"; TEXT_RESULT="{黑方认输}"
-		 else
+	    0000) # {黑方认输}
+		if [ "$TRUN" = 0 ]; then
+		     STR_RESULT="1-0"; TEXT_RESULT="{${result[7]}}"
+		 else # {红方认输}
 		     # TRUN = 1, 或者为空(如开局第1步红方就认输) 
-		     STR_RESULT="0-1"; TEXT_RESULT="{红方认输}"
-		     
+		     STR_RESULT="0-1"; TEXT_RESULT="{${result[8]}}"    
 		 fi
-		 
-
+ 
 	      tput rc; tput ed;
 	      echo -e "\n${STR_RESULT} ${TEXT_RESULT}\n" | tee -a "$PGN_BODY"
 	      ;;
-
-
 
       esac
       
@@ -2411,7 +2336,9 @@ STR_TMP=`mktemp -u | cut -d'.' -f2`
 #[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
 
     ## TAG 2384.1: 
-  if [ "$MODE_MISS" = 1 ] ||  [ "$MODE_MISS" = 2 ];then
+#  if [ "$MODE_MISS" = 1 ] ||  [ "$MODE_MISS" = 2 ];then
+  if [ "$MODE" = 3 ] ||  [ "$MODE" = 2 ];then
+
 STR_FEN=`echo "${row9[*]}/${row8[*]}/${row7[*]}/${row6[*]}/${row5[*]}/${row4[*]}/${row3[*]}/${row2[*]}/${row1[*]}/${row0[*]}" | sed "/ /s///g;/111111111/s//9/g;/11111111/s//8/g;/1111111/s//7/g;/111111/s//6/g;/11111/s//5/g;/1111/s//4/g;/111/s//3/g;/11/s//2/g;"`
 echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 
@@ -2581,7 +2508,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 			# 在 FEN 数据中，数字 1 代表单个空位（无棋子）。			
 
 	   		## 把棋子代码转换成中文文字（如：兵）
-		      if [ -n "$R5" ]; then ST3="$R5"; else ST3="$S3";
+		      if [ -n "${psr[4]}" ]; then ST3="${psr[4]}"; else ST3="$S3";
 		      fi
 			row0[0]=1;  
 		    else
@@ -2592,7 +2519,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 		
 		51) # （红方）车，1路
 		    if [ "${row0[8]}" != '1' ]; then row0[8]=1; 
-		      if [ -n "$R5" ]; then ST3="$R5"; else ST3="$S3";
+		      if [ -n "${psr[4]}" ]; then ST3="${psr[4]}"; else ST3="$S3";
 		      fi
 		    else tput rc; tput ed; continue;
 		    fi
@@ -2601,7 +2528,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 		#
 		48) # （红方）马，8路
 		    if [ "${row0[1]}" != '1' ]; then row0[1]=1; 
-		      if [ -n "$R4" ]; then ST3="$R4"; else ST3="$S3";
+		      if [ -n "${psr[3]}" ]; then ST3="${psr[3]}"; else ST3="$S3";
 		      fi
 		    else tput rc; tput ed; continue;
 		    fi
@@ -2609,7 +2536,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 
 		42) # （红方）马，2路
 		    if [ "${row0[7]}" != '1' ]; then row0[7]=1; 
-		      if [ -n "$R4" ]; then ST3="$R4"; else ST3="$S3";
+		      if [ -n "${psr[3]}" ]; then ST3="${psr[3]}"; else ST3="$S3";
 		      fi
 		    else tput rc; tput ed; continue;
 		    fi
@@ -2618,7 +2545,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 		#
 		37) # （红方）相，7路
 		    if [ "${row0[2]}" != '1' ]; then row0[2]=1; 
-		      if [ -n "$R3" ]; then ST3="$R3"; else ST3="$S3";
+		      if [ -n "${psr[2]}" ]; then ST3="${psr[2]}"; else ST3="$S3";
 		      fi
 		    else tput rc; tput ed; continue;
 		    fi
@@ -2626,7 +2553,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 
 		33) # （红方）相，3路
 		    if [ "${row0[6]}" != '1' ]; then row0[6]=1; 
-		      if [ -n "$R3" ]; then ST3="$R3"; else ST3="$S3";
+		      if [ -n "${psr[2]}" ]; then ST3="${psr[2]}"; else ST3="$S3";
 		      fi
 		    else tput rc; tput ed; continue;
 		    fi
@@ -2635,7 +2562,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 		#
 		26) # （红方）仕，6路
 		    if [ "${row0[3]}" != '1' ]; then row0[3]=1; 
-		      if [ -n "$R2" ]; then ST3="$R2"; else ST3="$S3";
+		      if [ -n "${psr[1]}" ]; then ST3="${psr[1]}"; else ST3="$S3";
 		      fi
 
 		    else tput rc; tput ed; continue;
@@ -2644,7 +2571,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 
 		24) # （红方）仕，4路
 		    if [ "${row0[5]}" != '1' ]; then row0[5]=1; 
-		      if [ -n "$R2" ]; then ST3="$R2"; else ST3="$S3";
+		      if [ -n "${psr[1]}" ]; then ST3="${psr[1]}"; else ST3="$S3";
 		      fi
 		    else tput rc; tput ed; continue;
 		    fi
@@ -2681,7 +2608,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 		;;
 	    esac
 	    
-	    if [ -n "$R6" ]; then ST3="$R6"; else ST3="$S3"; fi		
+	    if [ -n "${psr[5]}" ]; then ST3="${psr[5]}"; else ST3="$S3"; fi		
 	;;
 
 	7) # 兵, row3[@]
@@ -2723,7 +2650,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 		esac
 
 		## 把棋子代码转换成中文文字（如：兵）
-		if [ -n "$R7" ]; then ST3="$R7"; else ST3="$S3"; fi
+		if [ -n "${psr[6]}" ]; then ST3="${psr[6]}"; else ST3="$S3"; fi
 
 
 		;; # 红兵行结束
@@ -2738,19 +2665,19 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
      esac 
 
 	
-	if [ -n "$RED" ]; then ST2="$RED"; else ST2="$S2"; fi
+	if [ -n "${someone[1]}" ]; then ST2="${someone[1]}"; else ST2="$S2"; fi
 	
      	## ------------
         case "$S4" in
-	1)if [ -n "$R_ONE" ]; then ST4="$R_ONE"; else ST4="$S4"; fi ;;
-	2)if [ -n "$R_TWO" ]; then ST4="$R_TWO"; else ST4="$S4"; fi ;;
-	3)if [ -n "$R_THREE" ]; then ST4="$R_THREE"; else ST4="$S4"; fi ;;
-	4)if [ -n "$R_FOUR" ]; then ST4="$R_FOUR"; else ST4="$S4"; fi ;;
-	5)if [ -n "$R_FIVE" ]; then ST4="$R_FIVE"; else ST4="$S4"; fi ;;
-	6)if [ -n "$R_SIX" ]; then ST4="$R_SIX"; else ST4="$S4"; fi ;;
-	7)if [ -n "$R_SEVEN" ]; then ST4="$R_SEVEN"; else ST4="$S4"; fi ;;
-	8)if [ -n "$R_EIGHT" ]; then ST4="$R_EIGHT"; else ST4="$S4"; fi ;;
-	9)if [ -n "$R_NINE" ]; then ST4="$R_NINE"; else ST4="$S4"; fi ;;
+	1)if [ -n "${colr[0]}" ]; then ST4="${colr[0]}"; else ST4="$S4"; fi ;;
+	2)if [ -n "${colr[1]}" ]; then ST4="${colr[1]}"; else ST4="$S4"; fi ;;
+	3)if [ -n "${colr[2]}" ]; then ST4="${colr[2]}"; else ST4="$S4"; fi ;;
+	4)if [ -n "${colr[3]}" ]; then ST4="${colr[3]}"; else ST4="$S4"; fi ;;
+	5)if [ -n "${colr[4]}" ]; then ST4="${colr[4]}"; else ST4="$S4"; fi ;;
+	6)if [ -n "${colr[5]}" ]; then ST4="${colr[5]}"; else ST4="$S4"; fi ;;
+	7)if [ -n "${colr[6]}" ]; then ST4="${colr[6]}"; else ST4="$S4"; fi ;;
+	8)if [ -n "${colr[7]}" ]; then ST4="${colr[7]}"; else ST4="$S4"; fi ;;
+	9)if [ -n "${colr[8]}" ]; then ST4="${colr[8]}"; else ST4="$S4"; fi ;;
 
 	*) # 其它无效的竖线代码，自动清除，等待重新输入
 	tput rc; tput ed; continue;
@@ -2841,11 +2768,11 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 	    
 	    ## 把棋子代码转换成中文文字
 	    case "${S3}" in 
-	      4)if [ -n "$B4" ]; then ST3="$B4"; else ST3="$S3"; fi ;;
-	      5)if [ -n "$B5" ]; then ST3="$B5"; else ST3="$S3"; fi ;;
+	      4)if [ -n "${psb[3]}" ]; then ST3="${psb[3]}"; else ST3="$S3"; fi ;;
+	      5)if [ -n "${psb[4]}" ]; then ST3="${psb[4]}"; else ST3="$S3"; fi ;;
 
-	      2)if [ -n "$B2" ]; then ST3="$B2"; else ST3="$S3"; fi ;;
-	      3)if [ -n "$B3" ]; then ST3="$B3"; else ST3="$S3"; fi ;;
+	      2)if [ -n "${psb[1]}" ]; then ST3="${psb[1]}"; else ST3="$S3"; fi ;;
+	      3)if [ -n "${psb[2]}" ]; then ST3="${psb[2]}"; else ST3="$S3"; fi ;;
 	      *): ;;
 	    esac
 
@@ -2873,7 +2800,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 		;;
 	    esac
 	    
-	    if [ -n "$B6" ]; then ST3="$B6"; else ST3="$S3"; fi		
+	    if [ -n "${psb[5]}" ]; then ST3="${psb[5]}"; else ST3="$S3"; fi		
 	;;
 
 	7) # 卒, row6[@]
@@ -2915,7 +2842,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 		esac
 
 		## 把棋子代码转换成中文文字（如：卒）
-		if [ -n "$B7" ]; then ST3="$B7"; else ST3="$S3"; fi
+		if [ -n "${psb[6]}" ]; then ST3="${psb[6]}"; else ST3="$S3"; fi
 
 
 		;; # 红卒行结束
@@ -2934,19 +2861,19 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
      esac 
 
 
-	if [ -n "$BLACK" ]; then ST2="$BLACK"; else ST2="$S2"; fi
+	if [ -n "${someone[0]}" ]; then ST2="${someone[0]}"; else ST2="$S2"; fi
 	
      	## ------------
         case "$S4" in
-	1)if [ -n "$B_ONE" ]; then ST4="$B_ONE"; else ST4="$S4"; fi ;;
-	2)if [ -n "$B_TWO" ]; then ST4="$B_TWO"; else ST4="$S4"; fi ;;
-	3)if [ -n "$B_THREE" ]; then ST4="$B_THREE"; else ST4="$S4"; fi ;;
-	4)if [ -n "$B_FOUR" ]; then ST4="$B_FOUR"; else ST4="$S4"; fi ;;
-	5)if [ -n "$B_FIVE" ]; then ST4="$B_FIVE"; else ST4="$S4"; fi ;;
-	6)if [ -n "$B_SIX" ]; then ST4="$B_SIX"; else ST4="$S4"; fi ;;
-	7)if [ -n "$B_SEVEN" ]; then ST4="$B_SEVEN"; else ST4="$S4"; fi ;;
-	8)if [ -n "$B_EIGHT" ]; then ST4="$B_EIGHT"; else ST4="$S4"; fi ;;
-	9)if [ -n "$B_NINE" ]; then ST4="$B_NINE"; else ST4="$S4"; fi ;;
+	1)if [ -n "${colb[0]}" ]; then ST4="${colb[0]}"; else ST4="$S4"; fi ;;
+	2)if [ -n "${colb[1]}" ]; then ST4="${colb[1]}"; else ST4="$S4"; fi ;;
+	3)if [ -n "${colb[2]}" ]; then ST4="${colb[2]}"; else ST4="$S4"; fi ;;
+	4)if [ -n "${colb[3]}" ]; then ST4="${colb[3]}"; else ST4="$S4"; fi ;;
+	5)if [ -n "${colb[4]}" ]; then ST4="${colb[4]}"; else ST4="$S4"; fi ;;
+	6)if [ -n "${colb[5]}" ]; then ST4="${colb[5]}"; else ST4="$S4"; fi ;;
+	7)if [ -n "${colb[6]}" ]; then ST4="${colb[6]}"; else ST4="$S4"; fi ;;
+	8)if [ -n "${colb[7]}" ]; then ST4="${colb[7]}"; else ST4="$S4"; fi ;;
+	9)if [ -n "${colb[8]}" ]; then ST4="${colb[8]}"; else ST4="$S4"; fi ;;
 
 	*) # 其它无效的竖线代码，自动清除，等待重新输入
 	tput rc; tput ed; continue;
@@ -2971,8 +2898,8 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
     # 后面输出 让子走法时，会调整第1/2个文字的前后顺序，改为
     # 红无车一，黑无车9 这种文字顺序。
 
-	if [ -n "$MISS" ]; then
-	      ST1="$MISS"
+	if [ -n "${none[0]}" ]; then
+	      ST1="${none[0]}"
         else ST1="$S1"
         fi
 	
@@ -2982,12 +2909,23 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
 	#  如：{红无车一}，{黑无车9}
 	TEXT_MISS="${ST2}${ST1}${ST3}${ST4}"
 
+	### -------------------
 	## MODE_MISS: 是否有过让子操作。
 	# 1: 有让子；0或者空：未让子（即标准开局）；2：摆子模式
 	#  主要用于生成开局 FEN 棋子布局图。
+#	if [ "$MODE_MISS" != 1 ] && [ "$MODE_MISS" != 2 ]; then
+#	  MODE_MISS=1
+#	fi
+	### -------------------
+
+	## TAG 2930: 新变量：MODE: 走棋模式
+	# 0或者空：未让子（即标准开局）；1：暂未使用
+	# 3: 让子模式（有让子）；2：摆子模式
+	#  主要用于决定生成开局 FEN 棋子布局图数据时，是否采用默认标准 FEN 数据。
 	#  如果是标准开局，直接使用标准 FEN 开局数据。
-	if [ "$MODE_MISS" != 1 ] && [ "$MODE_MISS" != 2 ]; then
-	  MODE_MISS=1
+
+	if [ "$MODE" != 3 ] && [ "$MODE" != 2 ]; then
+	  MODE=3
 	fi
 
 	# 清除让子代码
@@ -3071,8 +3009,8 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
       
 
       ##--------------------------
-      until [ "$MODE_MISS" = 2 ]; do
-
+      #until [ "$MODE_MISS" = 2 ]; do
+      until [ "$MODE" = 2 ]; do
     ## TAG 2981: 
 
     tput sc
@@ -3083,8 +3021,10 @@ read -n 4 STRING
   ## ------
 case "$STRING" in
     \*\*\*\*): # 退出[摆子模式]
-	     MODE_MISS=2;
+	     #MODE_MISS=2;
+	     MODE=2;
 	     # =2 说明是[摆子模式]，会生成残局的布子图，而不是标准开局布子图
+
 	     tput rc; tput ed;
 	     echo -e "\n  进入 [\e[1;32m走棋模式\e[0m]";
 	     break;
@@ -3108,8 +3048,8 @@ case "$STRING" in
     
     # --- 3
     case "$S3" in
-	1)if [ -n "$RED" ]; then
-	      ST3="$RED"
+	1)if [ -n "${someone[1]}" ]; then
+	      ST3="${someone[1]}"
 	  else	ST3="R"
 	  fi
 	  
@@ -3158,7 +3098,7 @@ case "$STRING" in
 		
 		*)tput rc; tput ed; continue; ;;
 	    esac
-	    if [ -n "$R1" ]; then ST4="$R1"; else ST4="$S4"; fi; 
+	    if [ -n "${psr[0]}" ]; then ST4="${psr[0]}"; else ST4="$S4"; fi; 
 	    ;;
 	  
 	  2)	      ## 检查当前兵种棋子的总数量是否超标
@@ -3197,7 +3137,7 @@ case "$STRING" in
 					    ;;
 		*)tput rc; tput ed; continue; ;;
 	    esac	    
-	    if [ -n "$R2" ]; then ST4="$R2"; else ST4="$S4"; fi;
+	    if [ -n "${psr[1]}" ]; then ST4="${psr[1]}"; else ST4="$S4"; fi;
 	    ;;
 	  3)	      if [[ "${#xy_r3[*]}" -ge 2 ]]; then
 		  tput rc; tput ed; continue;
@@ -3235,7 +3175,7 @@ case "$STRING" in
 		
 		*)tput rc; tput ed; continue; ;;
 	    esac
-	    if [ -n "$R3" ]; then ST4="$R3"; else ST4="$S4"; fi; 
+	    if [ -n "${psr[2]}" ]; then ST4="${psr[2]}"; else ST4="$S4"; fi; 
 	    ;;
 	  4)	      if [[ "${#xy_r4[*]}" -ge 2 ]]; then
 		  tput rc; tput ed; continue;
@@ -3273,7 +3213,7 @@ case "$STRING" in
 			xy_r4=( ${xy_r4[*]} "$p" ); pos[p]='N';	      
 
 	    
-	    if [ -n "$R4" ]; then ST4="$R4"; else ST4="$S4"; fi;
+	    if [ -n "${psr[3]}" ]; then ST4="${psr[3]}"; else ST4="$S4"; fi;
 	    ;;
 	  5) if [[ "${#xy_r5[*]}" -ge 2 ]]; then
 
@@ -3314,7 +3254,7 @@ case "$STRING" in
 			xy_r5=( ${xy_r5[*]} "$p" ); pos[p]='R';	     
 	     
 	      
-	    if [ -n "$R5" ]; then ST4="$R5"; else ST4="$S4"; fi;
+	    if [ -n "${psr[4]}" ]; then ST4="${psr[4]}"; else ST4="$S4"; fi;
 
 	    ;;
 	  6) if [[ "${#xy_r6[*]}" -ge 2 ]]; then
@@ -3355,7 +3295,7 @@ case "$STRING" in
 			# 记入新的坐标和棋子
 			xy_r6=( ${xy_r6[*]} "$p" ); pos[p]='C';
 
-			if [ -n "$R6" ]; then ST4="$R6"; else ST4="$S4"; fi;
+			if [ -n "${psr[5]}" ]; then ST4="${psr[5]}"; else ST4="$S4"; fi;
 	   
 	    ;;
 	  7) if [[ "${#xy_r7[*]}" -ge 5 ]]; then
@@ -3397,7 +3337,7 @@ case "$STRING" in
 		 ;;
 		*)tput rc; tput ed; continue; ;;
 	    esac
-	    if [ -n "$R7" ]; then ST4="$R7"; else ST4="$S4"; fi; 
+	    if [ -n "${psr[6]}" ]; then ST4="${psr[6]}"; else ST4="$S4"; fi; 
 	    ;;
 	
 	*)tput rc; tput ed;
@@ -3407,11 +3347,11 @@ case "$STRING" in
 	  
 	  ;;
 	
-	0)if [ "$S4" != 0 ] && [ -n "$BLACK" ]; then
+	0)if [ "$S4" != 0 ] && [ -n "${someone[0]}" ]; then
 	      
-	      ST3="$BLACK"
-	  elif [ "${S4}" = '0' ] && [ -n "$NONE" ]; then
-	      ST3="$NONE"
+	      ST3="${someone[0]}"
+	  elif [ "${S4}" = '0' ] && [ -n "${none[1]}" ]; then
+	      ST3="${none[1]}"
 	      else	ST3="B"
 	  fi
 	  
@@ -3494,7 +3434,7 @@ case "$STRING" in
 			   ;;
 		*)tput rc; tput ed; continue; ;;
 	    esac
-	    if [ -n "$B1" ]; then ST4="$B1"; else ST4="$S4"; fi; 
+	    if [ -n "${psb[0]}" ]; then ST4="${psb[0]}"; else ST4="$S4"; fi; 
 	    ;;
 	
 	2)## 检查当前兵种棋子的总数量是否超标
@@ -3536,7 +3476,7 @@ case "$STRING" in
 		*)tput rc; tput ed; continue; ;;
 	     esac
 	     
-	     if [ -n "$B2" ]; then ST4="$B2"; else ST4="$S4"; fi;
+	     if [ -n "${psb[1]}" ]; then ST4="${psb[1]}"; else ST4="$S4"; fi;
 	     
 		    ;;
 	3)if [[ "${#xy_b3[*]}" -ge 2 ]]; then
@@ -3575,7 +3515,7 @@ case "$STRING" in
 	      
 		*)tput rc; tput ed; continue; ;;
 	  esac
-	  if [ -n "$B3" ]; then ST4="$B3"; else ST4="$S4"; fi;
+	  if [ -n "${psb[2]}" ]; then ST4="${psb[2]}"; else ST4="$S4"; fi;
 	  ;;
 	
 	4)if [[ "${#xy_b4[*]}" -ge 2 ]]; then
@@ -3614,7 +3554,7 @@ case "$STRING" in
 			# 记入新的坐标和棋子
 			xy_b4=( ${xy_b4[*]} "$p" ); pos[p]='n';
 	
-	  if [ -n "$B4" ]; then ST4="$B4"; else ST4="$S4"; fi; 
+	  if [ -n "${psb[3]}" ]; then ST4="${psb[3]}"; else ST4="$S4"; fi; 
 	  ;;
 	5)if [[ "${#xy_b5[*]}" -ge 2 ]]; then
 
@@ -3655,7 +3595,7 @@ case "$STRING" in
 			# 记入新的坐标和棋子
 			xy_b5=( ${xy_b5[*]} "$p" ); pos[p]='r';	
 	
-	  if [ -n "$B5" ]; then ST4="$B5"; else ST4="$S4"; fi; 
+	  if [ -n "${psb[4]}" ]; then ST4="${psb[4]}"; else ST4="$S4"; fi; 
 	  ;;
 	6)if [[ "${#xy_b6[*]}" -ge 2 ]]; then
 		  tput rc; tput ed; continue;
@@ -3695,7 +3635,7 @@ case "$STRING" in
 
 			# 记入新的坐标和棋子
 			xy_b6=( ${xy_b6[*]} "$p" ); pos[p]='c';
-	  if [ -n "$B6" ]; then ST4="$B6"; else ST4="$S4"; fi; 
+	  if [ -n "${psb[5]}" ]; then ST4="${psb[5]}"; else ST4="$S4"; fi; 
 	  ;;
 	7)if [[ "${#xy_b7[*]}" -ge 5 ]]; then
 		  tput rc; tput ed; continue;
@@ -3734,7 +3674,7 @@ case "$STRING" in
 		  ;;
 		*)tput rc; tput ed; continue; ;;
 	  esac
-	  if [ -n "$B7" ]; then ST4="$B7"; else ST4="$S4"; fi;
+	  if [ -n "${psb[6]}" ]; then ST4="${psb[6]}"; else ST4="$S4"; fi;
 	  ;;
 	
 	*)tput rc; tput ed;
@@ -3813,7 +3753,7 @@ row0=( ${pos[10]} ${pos[20]} ${pos[30]} ${pos[40]} ${pos[50]} ${pos[60]} ${pos[7
  #
  #DEBUG=1
  if [ "$DEBUG" = 1 ]; then
- echo "  TAG 3540: $R1${#xy_r1[*]},$R2${#xy_r2[*]},$R3${#xy_r3[*]},$R4${#xy_r4[*]}, $R5${#xy_r5[*]},$R6${#xy_r6[*]},$R7${#xy_r7[*]} "
+ echo "  TAG 3540: ${psr[0]}${#xy_r1[*]},${psr[1]}${#xy_r2[*]},${psr[2]}${#xy_r3[*]},${psr[3]}${#xy_r4[*]}, ${psr[4]}${#xy_r5[*]},${psr[5]}${#xy_r6[*]},${psr[6]}${#xy_r7[*]} "
 
  fi
 unset  DEBUG
