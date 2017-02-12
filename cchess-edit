@@ -2,7 +2,7 @@
 # /bin/bash #-x
 #set -e
 
-# 2017-2-09
+# 2017-2-10
 # original filename: cchess-edit
 ## cchess: a PGN generator, which run in command line only
 
@@ -12,7 +12,7 @@
 
 ### 1. 程序版本, 日志, 调试, 语言环境相关 ###
 APPNAME="cchess-edit"
-VERSION="0.4"
+VERSION="0.5"
 
 # 1.1 是否记录日志
 KEEP_LOG=0
@@ -104,7 +104,7 @@ declare -a piece_die piece_dxy piece_dstep
 
 
 declare -a psr psb colr colb
-declare -a move someone none xone
+declare -a move player none xone
 
 # psr[*], psb[*]: Piece of Red/Black 红/黑方棋子名称,
 # colr[*], colb[*]: COL number of Red/Black 红/黑方棋子路数名称,  
@@ -857,7 +857,7 @@ colr=( "一" "二" "三" "四" "五" "六" "七" "八" "九" )
 colb=( "１" "２" "３" "４" "５" "６" "７" "８" "９" )
 
 move=( "进" "退" "平" )
-someone=( "黑" "红" "黑方" "红方" )
+player=( "黑" "红" "黑方" "红方" )
 none=( "无" "无子" )
 
 xone=( "前" "中" "后" "一" "二" "三" "四" "五" )
@@ -875,7 +875,7 @@ colr=( "一" "二" "三" "四" "五" "六" "七" "八" "九" )
 colb=( "１" "２" "３" "４" "５" "６" "７" "８" "９" )
 
 #
-someone=( "黑" "紅" "黑方" "紅方" )
+player=( "黑" "紅" "黑方" "紅方" )
 move=( "進" "退" "平" )
 none=( "無" "無子" )
 
@@ -902,7 +902,7 @@ move=( '+' '-' '.' )
 # BACKWARDS="-"
 # SIDEWARDS="."
 
-someone=( B R Black Red )
+player=( B R Black Red )
 
 none=( '/' '__' )
 # MISS="/"    #"让"
@@ -1330,9 +1330,9 @@ result=( "GameOver" "RedWin" "BlackWin" "Draw" "Win" "Loss" "Draw" "BlackAbort" 
     
     if [ "$SHOW_COUNT" = 1 ]; then
 	let "Y0 += 1"; tput cup "$Y0" "$X0"	
-echo "[${someone[1]}] ${psr[0]}${#xy_r1[*]} ${psr[1]}${#xy_r2[*]} ${psr[2]}${#xy_r3[*]}  ${psr[3]}${#xy_r4[*]} ${psr[4]}${#xy_r5[*]} ${psr[5]}${#xy_r6[*]} ${psr[6]}${#xy_r7[*]} "
+echo "[${player[1]}] ${psr[0]}${#xy_r1[*]} ${psr[1]}${#xy_r2[*]} ${psr[2]}${#xy_r3[*]}  ${psr[3]}${#xy_r4[*]} ${psr[4]}${#xy_r5[*]} ${psr[5]}${#xy_r6[*]} ${psr[6]}${#xy_r7[*]} "
 	let "Y0 += 1"; tput cup "$Y0" "$X0"	
-echo "[${someone[0]}] ${psb[0]}${#xy_b1[*]} ${psb[1]}${#xy_b2[*]} ${psb[2]}${#xy_b3[*]}  ${psb[3]}${#xy_b4[*]} ${psb[4]}${#xy_b5[*]} ${psb[5]}${#xy_b6[*]} ${psb[6]}${#xy_b7[*]} "   
+echo "[${player[0]}] ${psb[0]}${#xy_b1[*]} ${psb[1]}${#xy_b2[*]} ${psb[2]}${#xy_b3[*]}  ${psb[3]}${#xy_b4[*]} ${psb[4]}${#xy_b5[*]} ${psb[5]}${#xy_b6[*]} ${psb[6]}${#xy_b7[*]} "   
 fi  
     # ===================
     
@@ -2665,7 +2665,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
      esac 
 
 	
-	if [ -n "${someone[1]}" ]; then ST2="${someone[1]}"; else ST2="$S2"; fi
+	if [ -n "${player[1]}" ]; then ST2="${player[1]}"; else ST2="$S2"; fi
 	
      	## ------------
         case "$S4" in
@@ -2861,7 +2861,7 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
      esac 
 
 
-	if [ -n "${someone[0]}" ]; then ST2="${someone[0]}"; else ST2="$S2"; fi
+	if [ -n "${player[0]}" ]; then ST2="${player[0]}"; else ST2="$S2"; fi
 	
      	## ------------
         case "$S4" in
@@ -3048,8 +3048,8 @@ case "$STRING" in
     
     # --- 3
     case "$S3" in
-	1)if [ -n "${someone[1]}" ]; then
-	      ST3="${someone[1]}"
+	1)if [ -n "${player[1]}" ]; then
+	      ST3="${player[1]}"
 	  else	ST3="R"
 	  fi
 	  
@@ -3347,9 +3347,9 @@ case "$STRING" in
 	  
 	  ;;
 	
-	0)if [ "$S4" != 0 ] && [ -n "${someone[0]}" ]; then
+	0)if [ "$S4" != 0 ] && [ -n "${player[0]}" ]; then
 	      
-	      ST3="${someone[0]}"
+	      ST3="${player[0]}"
 	  elif [ "${S4}" = '0' ] && [ -n "${none[1]}" ]; then
 	      ST3="${none[1]}"
 	      else	ST3="B"
@@ -3847,3 +3847,4 @@ case "$DISPLAY" in
 esac
 
 exit 0;
+
