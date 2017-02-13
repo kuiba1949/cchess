@@ -2,7 +2,7 @@
 # /bin/bash #-x
 #set -e
 
-# 2017-2-10
+# 2017-2-13
 # original filename: cchess-edit
 ## cchess: a PGN generator, which run in command line only
 
@@ -954,7 +954,9 @@ result=( "GameOver" "RedWin" "BlackWin" "Draw" "Win" "Loss" "Draw" "BlackAbort" 
 		# 注：ROW_HR, ROW_TT, ROW_TB ROW_XX 字符串后面，至少
 		#    应加3个空格，以防止终端/控制台下屏幕上移一行后，原来的
 		#    字符未清除干净，在相应的行尾造成不相干的文字残留。
-		P1=". "
+
+		#P1=". " #EN, halfWidth，
+		P1="－" #zh, doubleWidth
 
 		### 最顶层加一行空行，以解决红方走棋换行后，最顶层黑方数字路数丢失
 		#   的缺陷(连续输入33个空格)
@@ -965,19 +967,22 @@ result=( "GameOver" "RedWin" "BlackWin" "Draw" "Win" "Loss" "Draw" "BlackAbort" 
 		
 		### row_t of Top, 因为一个中文汉字占用两个字符位置，
 		#   所以数字之间要加2个空格
-		ROW_TT="  1  2  3  4  5  6  7  8  9   "
+		#ROW_TT="  1  2  3  4  5  6  7  8  9   " #EN, halfWidth
+		 ROW_TT="  １ ２ ３ ４ ５ ６ ７ ８ ９   " #zh, doubleWidth
 
 		### row_t of Bottom
 		ROW_TB="  九 八 七 六 五 四 三 二 一   "
 
 		### row with ICCS X
-		ROW_XX="  A  B  C  D  E  F  G  H  I   "
+		# ROW_XX="  A  B  C  D  E  F  G  H  I   " #EN, halfWidth
+		  ROW_XX="  Ａ Ｂ Ｃ Ｄ Ｅ Ｆ Ｇ Ｈ Ｉ   " #zh, doubleWidth
 	    	    ;;
 
 	    *) # for English
 		#let "X0 = `tput cols` - 25"
 		let "X0 = `tput cols` - 34"		
-		P1='.'
+		#P1='.' # 下点（英文点号/句号）
+		 P1='·' # 中心点（人名分隔符）
 
 		### 最顶层加一行空行，以解决红方走棋换行后，最顶层黑方数字路数丢失
 		#   的缺陷(连续输入33个空格)
@@ -2414,11 +2419,25 @@ echo "[FEN \"${STR_FEN} w - - 0 1\"]" >> "$PGN_HEAD"
        
          tput rc; tput ed;
          MODE_MOVE=1
-         #break;
+
+ 	## -----------------
+	# TAG 2420: 
+	# 添加下面一行 trap 语句。功能：
+	# 如果从 [走棋模式] 转入 [评论模式]，再回 [走棋模式] 后，此时如果按
+	# 　Ctrl +C 不会退出，需要继续走棋，或者结束走棋（自动忽略Ctrl + C 功能，
+	# 即不会退出程序。如果想退出，请输入 **** 结束走棋即可。）
+	trap : HUP INT QUIT TERM EXIT
+	## =================
+
+        #break;
            #continue;
 
-             }" SIGINT
-      #done
+
+
+             }" HUP INT QUIT TERM EXIT # INT
+
+
+	
       
       echo -n " {" > "$PGN_DESC"
       cat >> "$PGN_DESC"
